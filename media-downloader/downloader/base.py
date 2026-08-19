@@ -30,6 +30,12 @@ class DownloadOptions:
     max_file_size_bytes: int = 200 * 1024 * 1024
     timeout_seconds: int = 180
     output_dir: Path = field(default_factory=lambda: Path("/tmp/media-downloader"))
+    #: Optional Netscape-format cookies.txt (yt-dlp's `cookiefile`).
+    #: Some platforms (notably Instagram) increasingly reject anonymous
+    #: requests; this lets an operator authenticate as a real account they
+    #: control. Never required — adapters must work without it for
+    #: platforms that don't need it.
+    cookies_file: Path | None = None
 
 
 @dataclass

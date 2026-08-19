@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     # --- Quality --------------------------------------------------------------
     default_quality: QualityMode = Field(default=QualityMode.BEST_COMPATIBLE, alias="DEFAULT_QUALITY")
 
+    # --- Optional platform authentication -------------------------------
+    # Netscape-format cookies.txt path (yt-dlp's `cookiefile`). Some
+    # platforms (notably Instagram) increasingly reject anonymous
+    # requests; this is how an operator opts in to authenticating as a
+    # real account they control. Unset by default — every adapter must
+    # keep working without it for platforms that don't need it. See
+    # README.md "Instagram cookies (optional)".
+    cookies_file: Path | None = Field(default=None, alias="COOKIES_FILE")
+
     # --- Logging -----------------------------------------------------------
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 

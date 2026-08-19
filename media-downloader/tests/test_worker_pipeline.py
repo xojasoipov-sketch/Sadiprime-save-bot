@@ -88,16 +88,18 @@ class ScriptedAdapter(DownloaderAdapter):
         return DownloadResult(files=[media_file], source_url=url, platform="instagram")
 
 
-def make_settings(tmp_path: Path) -> Settings:
-    return Settings(
-        BOT_TOKEN="test",
-        TEMP_DIR=tmp_path,
-        MAX_TEMP_STORAGE_MB=10000,
-        JOB_LEASE_SECONDS=30,
-        JOB_TIMEOUT_SECONDS=10,
-        DOWNLOAD_TIMEOUT_SECONDS=5,
-        UPLOAD_TIMEOUT_SECONDS=5,
-    )
+def make_settings(tmp_path: Path, **overrides) -> Settings:
+    defaults = {
+        "BOT_TOKEN": "test",
+        "TEMP_DIR": tmp_path,
+        "MAX_TEMP_STORAGE_MB": 10000,
+        "JOB_LEASE_SECONDS": 30,
+        "JOB_TIMEOUT_SECONDS": 10,
+        "DOWNLOAD_TIMEOUT_SECONDS": 5,
+        "UPLOAD_TIMEOUT_SECONDS": 5,
+    }
+    defaults.update(overrides)
+    return Settings(**defaults)
 
 
 @pytest.fixture(autouse=True)
@@ -210,6 +212,25 @@ class TestUserPreferencesWiring:
         )
 
         assert adapter.received_options[0].audio_only is True
+
+    async def test_cookies_file_is_passed_to_download_options(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("# Netscape HTTP Cookie File\n")
+        settings = make_settings(tmp_path, COOKIES_FILE=str(cookies))
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].cookies_file == cookies
 
 
 class TestRetryBehavior:

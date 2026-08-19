@@ -131,10 +131,41 @@ See `.env.example` for the full, commented list. Key ones:
 | `JOB_LEASE_SECONDS` | Heartbeat lease TTL for crash recovery. |
 | `MAX_REQUESTS_PER_MINUTE` | Per-user rate limit (Redis-backed). |
 | `DEFAULT_QUALITY` | `LOW` / `MEDIUM` / `HIGH` / `BEST_COMPATIBLE`. |
+| `COOKIES_FILE` | Optional path to a cookies.txt for authenticated requests. See below. |
 
 **Set these from your own server's actual free CPU/RAM/disk** — the
 defaults are conservative placeholders, not a promise the host can handle
 them. Run `scripts/audit_server.sh` first.
+
+## Instagram cookies (optional)
+
+Instagram has been increasingly rejecting anonymous requests, even for
+genuinely public reels/posts — you'll see this in `worker` logs as
+`Requested content is not available, rate-limit reached or login
+required`. This isn't a bug in this codebase; it's yt-dlp hitting
+Instagram's own anti-bot wall, and yt-dlp's own documented fix is to
+authenticate as a real account via cookies. TikTok/YouTube/Pinterest
+don't need this.
+
+1. **Use a dedicated Instagram account you control for this — not your
+   personal one.** The cookies file is equivalent to that account's
+   password: anyone who gets it can act as that account. This is normal
+   login, not an access-control bypass — it's how any regular user would
+   view the same content, and this project does not use it to reach
+   private accounts or content the account itself couldn't otherwise see.
+2. Log into that account in a desktop browser, then export cookies for
+   `instagram.com` in Netscape format with a browser extension (e.g. "Get
+   cookies.txt LOCALLY" for Chrome/Firefox).
+3. Put the exported file at `media-downloader/secrets/cookies.txt` on
+   your server (`chmod 644` so the container's non-root user can read it;
+   never commit it — `.gitignore` already excludes everything under
+   `secrets/` except this README and `.gitkeep`).
+4. In `.env`, uncomment: `COOKIES_FILE=/app/secrets/cookies.txt`
+5. Redeploy: `docker compose -p media-downloader up -d --force-recreate`
+
+If the session expires (the account gets logged out anywhere, 2FA
+re-prompts, etc.), re-export and repeat steps 2–3; no code changes
+needed.
 
 ## Docker commands
 

@@ -73,6 +73,9 @@ services:
         condition: service_healthy
     volumes:
       - media_downloader_tmp:/tmp/media-downloader
+      # Read-only, and harmless if empty — only used when COOKIES_FILE is
+      # set in .env. See secrets/README.md.
+      - ./secrets:/app/secrets:ro
     networks:
       - media_downloader_network
     healthcheck:

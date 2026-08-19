@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from core.config import Language, QualityMode, Settings
 
 
@@ -33,3 +35,14 @@ def test_limits_have_sane_defaults():
     assert settings.max_file_size_mb > 0
     assert settings.download_timeout_seconds > 0
     assert settings.job_timeout_seconds >= settings.download_timeout_seconds - 1
+
+
+def test_cookies_file_is_unset_by_default():
+    settings = Settings()
+    assert settings.cookies_file is None
+
+
+def test_cookies_file_parses_env_var_as_path(monkeypatch):
+    monkeypatch.setenv("COOKIES_FILE", "/app/secrets/cookies.txt")
+    settings = Settings()
+    assert settings.cookies_file == Path("/app/secrets/cookies.txt")

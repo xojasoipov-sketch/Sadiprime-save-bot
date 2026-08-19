@@ -99,6 +99,11 @@ class YtDlpAdapter(DownloaderAdapter):
             opts["postprocessors"] = [
                 {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
             ]
+        if options.cookies_file and options.cookies_file.exists():
+            # Some platforms (Instagram in particular) increasingly reject
+            # anonymous requests. Missing/unset is the common case and is
+            # silently skipped — cookies are opt-in, never required.
+            opts["cookiefile"] = str(options.cookies_file)
         opts.update(self.extra_ydl_opts)
         return opts
 

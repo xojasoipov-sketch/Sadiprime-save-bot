@@ -37,3 +37,29 @@ class TestAudioOnlyPostprocessing:
         opts = adapter._base_ydl_opts(options, Path(tmp_path))
 
         assert opts["format"] == "bestaudio/best"
+
+
+class TestCookiesFile:
+    def test_unset_cookies_file_is_not_passed_to_ytdlp(self, tmp_path):
+        adapter = YouTubeAdapter()
+        options = DownloadOptions(output_dir=tmp_path, cookies_file=None)
+        opts = adapter._base_ydl_opts(options, Path(tmp_path))
+
+        assert "cookiefile" not in opts
+
+    def test_nonexistent_cookies_file_is_not_passed_to_ytdlp(self, tmp_path):
+        adapter = YouTubeAdapter()
+        options = DownloadOptions(output_dir=tmp_path, cookies_file=tmp_path / "missing.txt")
+        opts = adapter._base_ydl_opts(options, Path(tmp_path))
+
+        assert "cookiefile" not in opts
+
+    def test_existing_cookies_file_is_passed_to_ytdlp(self, tmp_path):
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("# Netscape HTTP Cookie File\n")
+
+        adapter = YouTubeAdapter()
+        options = DownloadOptions(output_dir=tmp_path, cookies_file=cookies)
+        opts = adapter._base_ydl_opts(options, Path(tmp_path))
+
+        assert opts["cookiefile"] == str(cookies)

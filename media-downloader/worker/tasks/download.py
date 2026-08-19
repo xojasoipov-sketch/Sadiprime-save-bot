@@ -179,6 +179,7 @@ async def process_job(
                     max_file_size_bytes=settings.max_file_size_mb * 1024 * 1024,
                     timeout_seconds=settings.download_timeout_seconds,
                     output_dir=job_dir,
+                    cookies_file=settings.cookies_file,
                 )
                 result = await asyncio.wait_for(
                     adapter.download(job.url, options),
