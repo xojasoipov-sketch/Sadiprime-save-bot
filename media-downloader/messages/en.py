@@ -48,7 +48,7 @@ MESSAGES: dict[str, str] = {
     "error_active_job": "⏳ You already have a download in progress. Please wait for it to finish.",
     "error_generic": "❌ Something went wrong. Please try again later.",
     "not_admin": "⛔ This command is for administrators only.",
-    "song_id_button": "🎵 Identify song",
+    "song_id_button": "🎵 Download the song",
     "song_id_searching": "🔎 Identifying song…",
     "song_id_not_found": "❌ Couldn't identify the song. It may have no background music or isn't in the database.",
     "song_id_expired": "⏳ Song identification expired for this video.",

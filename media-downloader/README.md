@@ -172,9 +172,10 @@ needed.
 
 ## Song identification (optional)
 
-Every downloaded video gets a "🎵 Identify song" button underneath it when
-`AUDD_API_TOKEN` is set — unset (default), the button simply doesn't
-appear; nothing else about the bot depends on this.
+Every downloaded video gets a "🎵 Qo'shiqni yuklab olish" (download the
+song) button underneath it when `AUDD_API_TOKEN` is set — unset
+(default), the button simply doesn't appear; nothing else about the bot
+depends on this.
 
 1. Register at [audd.io](https://dashboard.audd.io/) and get a free API
    token (no credit card required).
@@ -185,10 +186,15 @@ How it works: right after a video is uploaded, the worker extracts a
 short (20s) low-bitrate audio clip with ffmpeg and stashes it in Redis
 under the job id for 10 minutes — this happens *before* the job's temp
 directory is cleaned up, since by then the original file is gone. Tapping
-the button sends that clip to AudD.io's recognition API and replies with
-the matched artist/title (plus a Spotify/Apple Music link when AudD
-returns one). If the clip has no recognizable music, or 10 minutes have
-passed, the bot says so rather than guessing.
+the button sends that clip to AudD.io's recognition API; the matched
+"artist title" is then fed straight into the same YouTube search + numbered
+pick-list used for a plain-text music search (up to 10 results with
+durations, tap a number to get the mp3) — so identifying a song ends in
+downloading it, not just a text answer. If AudD finds a match but nothing
+plays back on YouTube, the bot falls back to a plain artist/title reply
+(plus a Spotify/Apple Music link when AudD provides one). If the clip has
+no recognizable music, or 10 minutes have passed, the bot says so rather
+than guessing.
 
 ## Download reliability
 

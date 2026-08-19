@@ -48,7 +48,7 @@ MESSAGES: dict[str, str] = {
     "error_active_job": "⏳ Sizda hozir yuklanayotgan media bor. Iltimos, tugashini kuting.",
     "error_generic": "❌ Xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring.",
     "not_admin": "⛔ Bu buyruq faqat administratorlar uchun.",
-    "song_id_button": "🎵 Qo'shiqni aniqlash",
+    "song_id_button": "🎵 Qo'shiqni yuklab olish",
     "song_id_searching": "🔎 Qo'shiq aniqlanmoqda…",
     "song_id_not_found": "❌ Qo'shiq aniqlanmadi. Ehtimol, fon musiqasi yo'q yoki bazada yo'q.",
     "song_id_expired": "⏳ Bu video uchun aniqlash muddati tugadi.",
