@@ -1,0 +1,106 @@
+# Isolated, self-contained stack. Uses its own network, its own volumes,
+# its own containers — no dependency on any other project's containers,
+# networks, or volumes (including SadiPrime's). No ports are published to
+# the host: the bot uses Telegram long polling and Redis is internal-only.
+#
+# Run everything scoped to this project explicitly:
+#   docker compose -p media-downloader up -d --build
+#   docker compose -p media-downloader down            (never `down` without -p from elsewhere)
+
+name: media-downloader
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: media-downloader-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - media_downloader_redis_data:/data
+    networks:
+      - media_downloader_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 320m
+    # Intentionally no `ports:` — Redis is reachable only from containers
+    # on media_downloader_network, never from the host or the internet.
+
+  bot:
+    build: .
+    image: media-downloader:latest
+    container_name: media-downloader-bot
+    restart: unless-stopped
+    command: ["python", "-m", "bot.main"]
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - media_downloader_tmp:/tmp/media-downloader
+    networks:
+      - media_downloader_network
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'bot.main' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+    # No `ports:` — long polling only, no inbound HTTP required.
+
+  worker:
+    build: .
+    image: media-downloader:latest
+    container_name: media-downloader-worker
+    restart: unless-stopped
+    command: ["python", "-m", "worker.main"]
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - media_downloader_tmp:/tmp/media-downloader
+    networks:
+      - media_downloader_network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import time,sys,pathlib; p=pathlib.Path('/tmp/media-downloader/worker.healthy'); sys.exit(0 if p.exists() and time.time()-float(p.read_text()) < 60 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        # This is the resource-hungry piece (yt-dlp + ffmpeg). Keep it
+        # bounded well below the host's total capacity so SadiPrime's
+        # CPU/RAM is never starved. Tune after auditing actual free
+        # capacity on the Hetzner box (see docs/ARCHITECTURE_AUDIT.md).
+        limits:
+          cpus: "1.5"
+          memory: 1024m
+
+networks:
+  media_downloader_network:
+    name: media_downloader_network
+    driver: bridge
+    # Deliberately NOT external / NOT shared with any other compose
+    # project (e.g. SadiPrime). Nothing connects to this network from
+    # outside this compose file.
+
+volumes:
+  media_downloader_redis_data:
+    name: media_downloader_redis_data
+  media_downloader_tmp:
+    name: media_downloader_tmp

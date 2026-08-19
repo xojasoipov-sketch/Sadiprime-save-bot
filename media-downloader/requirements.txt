@@ -1,0 +1,8 @@
+aiogram==3.13.1
+yt-dlp==2024.10.22
+redis==5.0.8
+pydantic==2.9.2
+pydantic-settings==2.5.2
+structlog==24.4.0
+aiofiles==24.1.0
+filetype==1.2.0
