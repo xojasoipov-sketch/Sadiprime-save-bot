@@ -36,6 +36,10 @@ class DownloadOptions:
     #: control. Never required — adapters must work without it for
     #: platforms that don't need it.
     cookies_file: Path | None = None
+    #: Force outbound requests over IPv4 (yt-dlp's `source_address`
+    #: trick). Off by default — only useful on hosts with a flaky IPv6
+    #: route to a platform's CDN.
+    force_ipv4: bool = False
 
 
 @dataclass
@@ -47,6 +51,11 @@ class MediaFile:
     width: int | None = None
     height: int | None = None
     duration_seconds: float | None = None
+    #: yt-dlp's reported video codec (e.g. "avc1.640028", "vp09.00...").
+    #: Used to catch VP9/AV1-in-mp4 streams that satisfy format/extension
+    #: filters but won't autoplay inline in Telegram's iOS client — see
+    #: media/processor.py's codec-fix fallback.
+    vcodec: str | None = None
 
 
 @dataclass

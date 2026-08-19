@@ -19,6 +19,7 @@ from downloader.base import (
     DownloadResult,
     MediaFile,
     MediaKind,
+    MediaUnavailableError,
     PrivateContentError,
 )
 from downloader.base import DownloadTimeoutError as AdapterDownloadTimeoutError
@@ -36,6 +37,7 @@ class FakeBot:
     def __init__(self):
         self.edits: list[str] = []
         self.sent: list[str] = []
+        self.dms: list[tuple[int, str]] = []
 
     async def edit_message_text(self, chat_id, message_id, text):
         self.edits.append(text)
@@ -51,6 +53,9 @@ class FakeBot:
 
     async def send_media_group(self, chat_id, media):
         self.sent.append(f"group:{len(media)}")
+
+    async def send_message(self, chat_id, text):
+        self.dms.append((chat_id, text))
 
 
 class ScriptedAdapter(DownloaderAdapter):
@@ -179,7 +184,7 @@ class TestCompressionFallbackGate:
             calls.append(files)
             return files
 
-        monkeypatch.setattr(download_task, "_compress_oversized_videos", fake_compress)
+        monkeypatch.setattr(download_task, "_apply_local_media_fixes", fake_compress)
 
         await download_task.process_job(
             job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
@@ -201,7 +206,7 @@ class TestCompressionFallbackGate:
         async def fake_compress(files, **kwargs):
             raise AssertionError("should not run when disabled")
 
-        monkeypatch.setattr(download_task, "_compress_oversized_videos", fake_compress)
+        monkeypatch.setattr(download_task, "_apply_local_media_fixes", fake_compress)
 
         await download_task.process_job(
             job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
@@ -281,6 +286,105 @@ class TestUserPreferencesWiring:
         )
 
         assert adapter.received_options[0].cookies_file == cookies
+
+    async def test_force_ipv4_is_passed_to_download_options(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, FORCE_IPV4=True)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].force_ipv4 is True
+
+
+class TestAdminAlerting:
+    async def test_alerts_admin_on_non_retryable_failure(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ADMIN_USER_IDS="111")
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[PrivateContentError("private")])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.dms and bot.dms[0][0] == 111
+        assert "instagram" in bot.dms[0][1]
+        assert "PrivateContentError" in bot.dms[0][1]
+
+    async def test_no_admin_alert_when_no_admins_configured(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)  # ADMIN_USER_IDS unset
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[PrivateContentError("private")])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.dms == []
+
+    async def test_repeat_failures_are_deduplicated_within_cooldown(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ADMIN_USER_IDS="111")
+        store = JobStore(fake_redis)
+        bot = FakeBot()
+
+        for _ in range(3):
+            job = make_job(tmp_path)
+            await store.create(job)
+            adapter = ScriptedAdapter(failures=[PrivateContentError("private")])
+            monkeypatch.setattr(
+                download_task, "get_adapter", lambda platform, adapter=adapter: adapter
+            )
+            await download_task.process_job(
+                job, bot=bot, store=store, limiter=limiter, settings=settings
+            )
+
+        # Same platform + same error type, all within the cooldown window
+        # -> only the first failure actually paged an admin.
+        assert len(bot.dms) == 1
+
+    async def test_different_error_types_each_get_their_own_alert(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ADMIN_USER_IDS="111")
+        store = JobStore(fake_redis)
+        bot = FakeBot()
+
+        for failure in [PrivateContentError("private"), MediaUnavailableError("gone")]:
+            job = make_job(tmp_path)
+            await store.create(job)
+            adapter = ScriptedAdapter(failures=[failure])
+            monkeypatch.setattr(
+                download_task, "get_adapter", lambda platform, adapter=adapter: adapter
+            )
+            await download_task.process_job(
+                job, bot=bot, store=store, limiter=limiter, settings=settings
+            )
+
+        assert len(bot.dms) == 2
 
 
 class TestRetryBehavior:

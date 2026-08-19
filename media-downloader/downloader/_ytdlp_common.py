@@ -59,14 +59,27 @@ def _quality_format_string(quality: QualityMode, *, audio_only: bool) -> str:
     if audio_only:
         return "bestaudio/best"
 
-    # BEST_COMPATIBLE prefers an already-muxed progressive mp4 so we avoid
-    # an ffmpeg remux step whenever possible; falls back sanibly otherwise.
+    # Every preset prefers an avc1/h264 video codec first: Instagram and
+    # TikTok both sometimes serve VP9-in-mp4, which satisfies an
+    # [ext=mp4] filter but won't autoplay inline in Telegram's iOS
+    # client. Preferring the codec explicitly (not just BEST_COMPATIBLE)
+    # avoids that at the source; media/processor.py's codec-fix fallback
+    # is the safety net for when yt-dlp has no avc1 option to offer.
     presets = {
-        QualityMode.LOW: "worst[ext=mp4]/worst",
-        QualityMode.MEDIUM: "best[height<=480][ext=mp4]/best[height<=480]/best",
-        QualityMode.HIGH: "best[height<=1080][ext=mp4]/best[height<=1080]/best",
+        QualityMode.LOW: (
+            "worst[vcodec^=avc1][ext=mp4]/worst[ext=mp4]/worst"
+        ),
+        QualityMode.MEDIUM: (
+            "best[height<=480][vcodec^=avc1][ext=mp4]/"
+            "best[height<=480][ext=mp4]/best[height<=480]/best"
+        ),
+        QualityMode.HIGH: (
+            "best[height<=1080][vcodec^=avc1][ext=mp4]/"
+            "best[height<=1080][ext=mp4]/best[height<=1080]/best"
+        ),
         QualityMode.BEST_COMPATIBLE: (
-            "best[ext=mp4][vcodec^=avc1][acodec^=mp4a]/best[ext=mp4]/best"
+            "best[ext=mp4][vcodec^=avc1][acodec^=mp4a]/"
+            "best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best"
         ),
     }
     return presets[quality]
@@ -89,9 +102,23 @@ class YtDlpAdapter(DownloaderAdapter):
             "noprogress": True,
             "socket_timeout": min(30, options.timeout_seconds),
             "retries": 2,
+            # The Python API has no implicit default for either of these
+            # (unlike yt-dlp's CLI) — must be set explicitly to have any
+            # effect. fragment_retries covers segmented/HLS delivery
+            # (common on IG reels/stories); throttledratelimit makes
+            # yt-dlp abort and retry a connection that's been silently
+            # throttled below this speed instead of just running slow
+            # until the outer timeout.
+            "fragment_retries": 10,
+            "throttledratelimit": 51_200,  # 50 KB/s
             "max_filesize": options.max_file_size_bytes,
             "merge_output_format": "mp4",
         }
+        if options.force_ipv4:
+            # Opt-in: some VPS hosts have a flaky IPv6 route to a given
+            # CDN while IPv4 is fine. Off by default since it can only
+            # hurt on an IPv6-only host.
+            opts["source_address"] = "0.0.0.0"
         if options.audio_only:
             # Force a real audio container (mp3) via ffmpeg: the raw
             # "bestaudio" stream is often .webm/.m4a, which _kind_for_ext
@@ -190,6 +217,7 @@ class YtDlpAdapter(DownloaderAdapter):
                         width=entry.get("width"),
                         height=entry.get("height"),
                         duration_seconds=entry.get("duration"),
+                        vcodec=cand.get("vcodec") or entry.get("vcodec"),
                     )
                 )
         return files

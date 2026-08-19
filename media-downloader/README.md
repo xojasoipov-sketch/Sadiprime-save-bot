@@ -131,7 +131,8 @@ See `.env.example` for the full, commented list. Key ones:
 | `JOB_LEASE_SECONDS` | Heartbeat lease TTL for crash recovery. |
 | `MAX_REQUESTS_PER_MINUTE` | Per-user rate limit (Redis-backed). |
 | `DEFAULT_QUALITY` | `LOW` / `MEDIUM` / `HIGH` / `BEST_COMPATIBLE`. |
-| `ENABLE_COMPRESSION_FALLBACK` | If a video exceeds `MAX_FILE_SIZE_MB`, try one ffmpeg re-encode pass to fit it before failing. Default `true`. |
+| `ENABLE_COMPRESSION_FALLBACK` | Local ffmpeg fallbacks before failing outright: fix an incompatible video codec, and/or fit an oversized video under `MAX_FILE_SIZE_MB`. Default `true`. |
+| `FORCE_IPV4` | Force outbound requests over IPv4. Only useful on a host with a flaky IPv6 route to a platform's CDN. Default `false`. |
 | `COOKIES_FILE` | Optional path to a cookies.txt for authenticated requests. See below. |
 
 **Set these from your own server's actual free CPU/RAM/disk** — the
@@ -167,6 +168,38 @@ don't need this.
 If the session expires (the account gets logged out anywhere, 2FA
 re-prompts, etc.), re-export and repeat steps 2–3; no code changes
 needed.
+
+## Download reliability
+
+Beyond cookies, a few things specifically target Instagram/TikTok's
+tendency to be flakier than YouTube/Pinterest:
+
+- **Keep yt-dlp current.** `requirements.txt` pins an exact version —
+  yt-dlp ships frequent point releases specifically to patch broken
+  Instagram/TikTok extractors as those platforms change their internals.
+  A stale pin is a common, silent cause of downloads that used to work
+  suddenly failing. Check [PyPI](https://pypi.org/project/yt-dlp/) or
+  `pip index versions yt-dlp` periodically and bump the pin; there's no
+  automated check for this yet (see "Remaining limitations").
+- **Codec-compatibility fallback.** Instagram/TikTok sometimes serve
+  VP9-in-mp4, which passes our format filters but won't autoplay inline
+  in Telegram's iOS client. Every quality preset now prefers an
+  avc1/h264 stream at the yt-dlp level first
+  (`downloader/_ytdlp_common.py`); if none is offered, `media/processor.py`
+  re-encodes to H.264 after the fact (audio untouched). Same
+  `ENABLE_COMPRESSION_FALLBACK` switch as the oversized-file fallback.
+- **Network robustness.** `fragment_retries` (segmented/HLS delivery,
+  common on IG reels/stories) and throttle detection
+  (`throttledratelimit`) are always on — the yt-dlp Python API doesn't
+  default these the way its CLI does, so they're set explicitly. `FORCE_IPV4`
+  is available if you're seeing connection issues that look like a flaky
+  IPv6 route to a platform's CDN on your specific host.
+- **Proactive admin alerts.** A non-retryable (or retry-exhausted) job
+  failure now DMs every `ADMIN_USER_IDS` with the platform, error type,
+  and URL — deduplicated per (platform, error type) with a 10-minute
+  cooldown, so an outage (e.g. Instagram cookies expiring) sends one
+  alert, not one per failed job, and you don't have to poll `/status` to
+  notice.
 
 ## Docker commands
 
@@ -255,7 +288,7 @@ worker restart never loses queued (not-yet-started) jobs.
 make install-dev
 make lint        # ruff
 make typecheck    # mypy
-make test         # pytest — 177 tests, all mocked, no network access
+make test         # pytest — 209 tests, all mocked, no network access
 ```
 
 The normal suite never touches Instagram/TikTok/YouTube/Pinterest or a
@@ -277,9 +310,12 @@ correctly reaching `DownloadOptions`), music-search query sanitization and
 result parsing, the audio-only ffmpeg-postprocessor wiring, the full
 bot-layer search → results-list → pick → enqueue flow (including the
 Redis-backed search-session store, its per-requester authorization check,
-and its 5-minute TTL), cookies-file wiring, the oversized-video
-compression-fallback decision logic (and its on/off setting gate), and
-`/stats`'s per-platform breakdown.
+and its 5-minute TTL), cookies-file and force-IPv4 wiring, the
+codec-preferring format strings, the oversized-video/incompatible-codec
+compression-fallback decision logic (and its on/off setting gate,
+including their interaction — a codec fix followed by a still-needed
+size fix), `/stats`'s per-platform breakdown, and the cooldown-deduplicated
+proactive admin-alerting logic.
 
 ## Troubleshooting
 
@@ -329,7 +365,12 @@ the source platforms' terms of service and applicable copyright law.
 - **Integration tests against live platforms**: the `RUN_EXTERNAL_TESTS`
   flag and policy exist, but no live-platform tests are implemented yet —
   platform APIs/pages change over time and would need periodic upkeep.
-- **ffmpeg fallback re-encode path** (`media/processor.py`): wired into
-  the pipeline and unit-tested with a mocked ffmpeg call, but not
-  exercised against a real oversized video end-to-end in this session
-  (would require a live download of something over `MAX_FILE_SIZE_MB`).
+- **ffmpeg fallback re-encode paths** (`media/processor.py`, both the
+  size-fix and codec-fix): wired into the pipeline and unit-tested with a
+  mocked ffmpeg call, but not exercised against a real oversized/VP9
+  video end-to-end in this session (would require a live download that
+  actually triggers one).
+- **No automated yt-dlp-staleness check**: README "Download reliability"
+  documents checking PyPI manually; nothing in the bot itself surfaces
+  "yt-dlp is N releases behind" (e.g. in `/status`). Worth adding if
+  extractor breakage becomes a recurring issue.

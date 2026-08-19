@@ -46,3 +46,13 @@ def test_cookies_file_parses_env_var_as_path(monkeypatch):
     monkeypatch.setenv("COOKIES_FILE", "/app/secrets/cookies.txt")
     settings = Settings()
     assert settings.cookies_file == Path("/app/secrets/cookies.txt")
+
+
+def test_force_ipv4_disabled_by_default():
+    settings = Settings()
+    assert settings.force_ipv4 is False
+
+
+def test_enable_compression_fallback_on_by_default():
+    settings = Settings()
+    assert settings.enable_compression_fallback is True

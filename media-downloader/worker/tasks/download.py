@@ -37,7 +37,12 @@ from downloader.base import (
 from downloader.registry import get_adapter
 from media.cleanup import cleanup_job_dir, job_dir_for
 from media.processor import ProcessingError as CompressionError
-from media.processor import ffmpeg_available, transcode_to_fit_size
+from media.processor import (
+    ffmpeg_available,
+    needs_codec_fix,
+    transcode_to_compatible_codec,
+    transcode_to_fit_size,
+)
 from media.validator import FileValidationError, validate_media_file
 from messages.registry import t
 from worker.services.disk import check_disk_capacity
@@ -88,41 +93,107 @@ async def _safe_edit(bot: Bot, chat_id: int, message_id: int | None, text: str) 
         logger.warning("status_edit_failed", chat_id=chat_id, error=str(exc))
 
 
-async def _compress_oversized_videos(
+_ADMIN_ALERT_COOLDOWN_SECONDS = 600  # 10 minutes, per (platform, error type)
+
+
+async def _notify_admins_of_failure(
+    bot: Bot,
+    store: JobStore,
+    settings: Settings,
+    job: Job,
+    exc: Exception,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Best-effort proactive DM to admins on a job failure.
+
+    Deduplicated per (platform, error type) with a cooldown window so a
+    platform-wide outage (Instagram cookies expiring, yt-dlp needing an
+    update, ...) sends one alert rather than one per failed job. A failed
+    DM (blocked bot, etc.) is logged and never re-raised — alerting must
+    never break the job pipeline it's reporting on.
+    """
+
+    if not settings.admin_user_ids:
+        return
+
+    error_type = type(exc).__name__
+    dedup_key = f"md:adminalert:{job.platform}:{error_type}"
+    # NX: only the first caller within the cooldown window actually sends.
+    sent_first = await store.redis.set(
+        dedup_key, "1", nx=True, ex=_ADMIN_ALERT_COOLDOWN_SECONDS
+    )
+    if not sent_first:
+        return
+
+    text = (
+        "⚠️ Job failed\n"
+        f"platform: {job.platform}\n"
+        f"error: {error_type}: {str(exc)[:300]}\n"
+        f"url: {job.url[:200]}\n"
+        f"attempt: {job.attempt}\n"
+        f"job_id: {job.job_id}"
+    )
+    for admin_id in settings.admin_user_ids:
+        try:
+            await bot.send_message(admin_id, text)
+        except TelegramAPIError as alert_exc:
+            log.warning("admin_alert_failed", admin_id=admin_id, error=str(alert_exc))
+
+
+async def _apply_local_media_fixes(
     files: list[MediaFile],
     *,
     max_size_bytes: int,
     timeout_seconds: int,
     log: structlog.stdlib.BoundLogger,
 ) -> list[MediaFile]:
-    """Best-effort: re-encode any oversized VIDEO file to fit under the
-    limit before the size check gets a chance to reject it outright.
-    Images/audio are never touched (audio is already small; images have
-    no comparable "reduce bitrate" knob). Leaves a file exactly as-is if
-    ffmpeg is unavailable, duration is unknown, or the transcode itself
-    fails — the normal too-large error path handles it from there."""
+    """Best-effort local ffmpeg fallbacks for VIDEO files, tried before the
+    size/type checks get a chance to reject a file outright:
+
+      1. codec fix — yt-dlp reported a video codec (VP9/AV1-in-mp4, which
+         Instagram/TikTok sometimes serve) that won't autoplay inline in
+         Telegram's iOS client, even though it passed our format filters.
+      2. size fix — still (or now, post-re-encode) over the configured
+         limit, so re-encode at a bitrate that fits.
+
+    Images/audio are never touched. Leaves a file exactly as-is if ffmpeg
+    is unavailable or a given step fails — the normal validation error
+    path handles it from there, it just never gets a silent free pass."""
 
     if not ffmpeg_available():
         return files
 
     result: list[MediaFile] = []
     for media_file in files:
-        if media_file.size_bytes > max_size_bytes and media_file.kind == MediaKind.VIDEO:
+        current = media_file
+
+        if needs_codec_fix(current):
+            try:
+                log.info("codec_fix_started", file=current.path.name, vcodec=current.vcodec)
+                current = await transcode_to_compatible_codec(
+                    current, timeout_seconds=timeout_seconds
+                )
+                log.info(
+                    "codec_fix_completed", file=current.path.name, size_bytes=current.size_bytes
+                )
+            except CompressionError as exc:
+                log.warning("codec_fix_failed", file=current.path.name, error=str(exc))
+
+        if current.kind == MediaKind.VIDEO and current.size_bytes > max_size_bytes:
             try:
                 log.info(
-                    "compress_started", file=media_file.path.name, size_bytes=media_file.size_bytes
+                    "compress_started", file=current.path.name, size_bytes=current.size_bytes
                 )
-                compressed = await transcode_to_fit_size(
-                    media_file, target_max_bytes=max_size_bytes, timeout_seconds=timeout_seconds
+                current = await transcode_to_fit_size(
+                    current, target_max_bytes=max_size_bytes, timeout_seconds=timeout_seconds
                 )
                 log.info(
-                    "compress_completed", file=compressed.path.name, size_bytes=compressed.size_bytes
+                    "compress_completed", file=current.path.name, size_bytes=current.size_bytes
                 )
-                result.append(compressed)
-                continue
             except CompressionError as exc:
-                log.warning("compress_failed", file=media_file.path.name, error=str(exc))
-        result.append(media_file)
+                log.warning("compress_failed", file=current.path.name, error=str(exc))
+
+        result.append(current)
     return result
 
 
@@ -223,6 +294,7 @@ async def process_job(
                     timeout_seconds=settings.download_timeout_seconds,
                     output_dir=job_dir,
                     cookies_file=settings.cookies_file,
+                    force_ipv4=settings.force_ipv4,
                 )
                 result = await asyncio.wait_for(
                     adapter.download(job.url, options),
@@ -237,11 +309,12 @@ async def process_job(
                 await _safe_edit(bot, job.chat_id, job.status_message_id, t(lang, "processing"))
 
                 if settings.enable_compression_fallback:
-                    # Try to fit an oversized video under the limit before
-                    # the size check below gets a chance to reject it
-                    # outright (spec: "optionally process/compress if
-                    # configured" rather than a hard fail).
-                    result.files = await _compress_oversized_videos(
+                    # Try to fix an incompatible codec and/or fit an
+                    # oversized video under the limit before the checks
+                    # below get a chance to reject it outright (spec:
+                    # "optionally process/compress if configured" rather
+                    # than a hard fail).
+                    result.files = await _apply_local_media_fixes(
                         result.files,
                         max_size_bytes=options.max_file_size_bytes,
                         timeout_seconds=settings.processing_timeout_seconds,
@@ -283,21 +356,21 @@ async def process_job(
                 if exc.retryable and attempt < max_attempts:
                     await asyncio.sleep(2**attempt)
                     continue
-                await _fail_job(bot, job, store, exc, lang, log)
+                await _fail_job(bot, job, store, settings, exc, lang, log)
                 return
 
             except (TimeoutError, FileValidationError, TelegramAPIError) as exc:
                 log.warning("job_attempt_failed", attempt=attempt, error=str(exc))
-                await _fail_job(bot, job, store, exc, lang, log)
+                await _fail_job(bot, job, store, settings, exc, lang, log)
                 return
 
             except Exception as exc:  # noqa: BLE001 - last-resort guard, never leak to user
                 log.error("job_unexpected_error", error=str(exc), exc_info=True)
-                await _fail_job(bot, job, store, exc, lang, log)
+                await _fail_job(bot, job, store, settings, exc, lang, log)
                 return
 
         # Exhausted retries without an explicit failure branch above.
-        await _fail_job(bot, job, store, RuntimeError("Max attempts exhausted"), lang, log)
+        await _fail_job(bot, job, store, settings, RuntimeError("Max attempts exhausted"), lang, log)
 
     finally:
         heartbeat.cancel()
@@ -308,7 +381,13 @@ async def process_job(
 
 
 async def _fail_job(
-    bot: Bot, job: Job, store: JobStore, exc: Exception, lang: str, log: object
+    bot: Bot,
+    job: Job,
+    store: JobStore,
+    settings: Settings,
+    exc: Exception,
+    lang: str,
+    log: structlog.stdlib.BoundLogger,
 ) -> None:
     job.status = JobStatus.FAILED
     job.error = str(exc)[:500]
@@ -316,3 +395,4 @@ async def _fail_job(
     await store.save(job)
     await _safe_edit(bot, job.chat_id, job.status_message_id, t(lang, _error_key(exc)))
     await store.record_completion(job.platform, success=False)
+    await _notify_admins_of_failure(bot, store, settings, job, exc, log)

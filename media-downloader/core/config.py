@@ -68,13 +68,20 @@ class Settings(BaseSettings):
 
     # --- Quality --------------------------------------------------------------
     default_quality: QualityMode = Field(default=QualityMode.BEST_COMPATIBLE, alias="DEFAULT_QUALITY")
-    # If a downloaded video exceeds MAX_FILE_SIZE_MB, try one ffmpeg
-    # re-encode pass to fit it under the limit before giving up (section
-    # 29/30 of the spec: "optionally process/compress if configured").
-    # Disable to always fail outright on an oversized file instead.
+    # Local ffmpeg post-processing fallbacks, tried before giving up
+    # outright: (1) if a downloaded video exceeds MAX_FILE_SIZE_MB, one
+    # re-encode pass to fit it under the limit (spec section 29/30:
+    # "optionally process/compress if configured"); (2) if it's in a
+    # codec Telegram's iOS client won't autoplay inline (VP9/AV1-in-mp4,
+    # which Instagram/TikTok sometimes serve), one re-encode to H.264.
+    # Disable to always fail outright instead of attempting either.
     enable_compression_fallback: bool = Field(
         default=True, alias="ENABLE_COMPRESSION_FALLBACK"
     )
+    # Force outbound requests over IPv4 (yt-dlp's source_address trick).
+    # Off by default — only useful on hosts with a flaky IPv6 route to a
+    # platform's CDN.
+    force_ipv4: bool = Field(default=False, alias="FORCE_IPV4")
 
     # --- Optional platform authentication -------------------------------
     # Netscape-format cookies.txt path (yt-dlp's `cookiefile`). Some
