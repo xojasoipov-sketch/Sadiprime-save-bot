@@ -14,7 +14,7 @@ services:
     image: redis:7.4-alpine
     container_name: media-downloader-redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "96mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - media_downloader_redis_data:/data
     networks:
@@ -27,8 +27,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 320m
+          cpus: "0.25"
+          memory: 128m
     # Intentionally no `ports:` — Redis is reachable only from containers
     # on media_downloader_network, never from the host or the internet.
 
@@ -56,8 +56,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 256m
+          cpus: "0.25"
+          memory: 150m
     # No `ports:` — long polling only, no inbound HTTP required.
 
   worker:
@@ -85,11 +85,15 @@ services:
       resources:
         # This is the resource-hungry piece (yt-dlp + ffmpeg). Keep it
         # bounded well below the host's total capacity so SadiPrime's
-        # CPU/RAM is never starved. Tune after auditing actual free
-        # capacity on the Hetzner box (see docs/ARCHITECTURE_AUDIT.md).
+        # CPU/RAM is never starved. Values below are tuned for this
+        # project's actual server: 2 vCPU / 3.7GB RAM (~2GB available) /
+        # ~15GB free disk (see docs/ARCHITECTURE_AUDIT.md audit run) —
+        # 1 core + 512MB leaves a full core and >1GB RAM free for
+        # SadiPrime + the OS even under worst-case load. Re-tune if the
+        # server is resized.
         limits:
-          cpus: "1.5"
-          memory: 1024m
+          cpus: "1.0"
+          memory: 512m
 
 networks:
   media_downloader_network:
