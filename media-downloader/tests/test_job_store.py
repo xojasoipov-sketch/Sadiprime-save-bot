@@ -123,3 +123,16 @@ class TestStats:
         store = JobStore(fake_redis)
         stats = await store.get_stats()
         assert stats == {"total": 0, "success": 0, "failure": 0}
+
+    async def test_platform_stats_break_down_by_platform(self, fake_redis):
+        store = JobStore(fake_redis)
+        await store.record_completion("instagram", success=True)
+        await store.record_completion("instagram", success=False)
+        await store.record_completion("tiktok", success=True)
+
+        platform_stats = await store.get_platform_stats()
+        assert platform_stats == {"instagram": 2, "tiktok": 1}
+
+    async def test_platform_stats_empty_when_no_jobs_yet(self, fake_redis):
+        store = JobStore(fake_redis)
+        assert await store.get_platform_stats() == {}

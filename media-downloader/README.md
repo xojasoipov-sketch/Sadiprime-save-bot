@@ -118,7 +118,7 @@ See `.env.example` for the full, commented list. Key ones:
 | Variable | Meaning |
 |---|---|
 | `BOT_TOKEN` | Telegram bot token. Never commit this. |
-| `ADMIN_USER_IDS` | Comma-separated Telegram user IDs allowed to run `/status`. |
+| `ADMIN_USER_IDS` | Comma-separated Telegram user IDs allowed to run `/status` and `/stats`. |
 | `REDIS_URL` | Internal Redis URL — leave as `redis://redis:6379/0`. |
 | `DEFAULT_LANGUAGE` | `uz` (default) or `en`. |
 | `MAX_CONCURRENT_DOWNLOADS` | Global worker concurrency. |
@@ -131,6 +131,7 @@ See `.env.example` for the full, commented list. Key ones:
 | `JOB_LEASE_SECONDS` | Heartbeat lease TTL for crash recovery. |
 | `MAX_REQUESTS_PER_MINUTE` | Per-user rate limit (Redis-backed). |
 | `DEFAULT_QUALITY` | `LOW` / `MEDIUM` / `HIGH` / `BEST_COMPATIBLE`. |
+| `ENABLE_COMPRESSION_FALLBACK` | If a video exceeds `MAX_FILE_SIZE_MB`, try one ffmpeg re-encode pass to fit it before failing. Default `true`. |
 | `COOKIES_FILE` | Optional path to a cookies.txt for authenticated requests. See below. |
 
 **Set these from your own server's actual free CPU/RAM/disk** — the
@@ -187,7 +188,8 @@ make uninstall   # stop and remove this project's containers, network, volumes
 1. Create a bot with [@BotFather](https://t.me/BotFather), copy the token
    into `.env` as `BOT_TOKEN`.
 2. Get your numeric Telegram user ID (e.g. via @userinfobot) and put it in
-   `ADMIN_USER_IDS` to use `/status`.
+   `ADMIN_USER_IDS` to use `/status` (live infra health) and `/stats`
+   (lifetime job totals, success rate, per-platform breakdown).
 3. Long polling is used by default — no public port, no domain, no HTTPS
    certificate needed. Webhook mode can be added later by changing
    `bot/main.py`'s startup (swap `start_polling` for a webhook handler);
@@ -253,7 +255,7 @@ worker restart never loses queued (not-yet-started) jobs.
 make install-dev
 make lint        # ruff
 make typecheck    # mypy
-make test         # pytest — 161 tests, all mocked, no network access
+make test         # pytest — 177 tests, all mocked, no network access
 ```
 
 The normal suite never touches Instagram/TikTok/YouTube/Pinterest or a
@@ -272,10 +274,12 @@ user-message mapping, retry vs. no-retry behavior, and an end-to-end
 worker-pipeline integration test (success path, retryable-then-succeeds,
 non-retryable-fails-immediately, and user quality/audio-only preferences
 correctly reaching `DownloadOptions`), music-search query sanitization and
-result parsing, the audio-only ffmpeg-postprocessor wiring, and the full
+result parsing, the audio-only ffmpeg-postprocessor wiring, the full
 bot-layer search → results-list → pick → enqueue flow (including the
 Redis-backed search-session store, its per-requester authorization check,
-and its 5-minute TTL).
+and its 5-minute TTL), cookies-file wiring, the oversized-video
+compression-fallback decision logic (and its on/off setting gate), and
+`/stats`'s per-platform breakdown.
 
 ## Troubleshooting
 
@@ -325,6 +329,7 @@ the source platforms' terms of service and applicable copyright law.
 - **Integration tests against live platforms**: the `RUN_EXTERNAL_TESTS`
   flag and policy exist, but no live-platform tests are implemented yet —
   platform APIs/pages change over time and would need periodic upkeep.
-- **ffmpeg fallback re-encode path** (`media/processor.py`): implemented
-  and unit-testable, but not exercised against a real oversized video in
-  this session (would require a live download).
+- **ffmpeg fallback re-encode path** (`media/processor.py`): wired into
+  the pipeline and unit-tested with a mocked ffmpeg call, but not
+  exercised against a real oversized video end-to-end in this session
+  (would require a live download of something over `MAX_FILE_SIZE_MB`).

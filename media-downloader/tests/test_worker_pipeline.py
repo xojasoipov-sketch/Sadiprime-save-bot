@@ -161,6 +161,56 @@ class TestSuccessPath:
         assert stats["success"] == 1
 
 
+class TestCompressionFallbackGate:
+    async def test_compression_step_runs_when_enabled(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ENABLE_COMPRESSION_FALLBACK=True)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        calls = []
+
+        async def fake_compress(files, **kwargs):
+            calls.append(files)
+            return files
+
+        monkeypatch.setattr(download_task, "_compress_oversized_videos", fake_compress)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert len(calls) == 1
+
+    async def test_compression_step_skipped_when_disabled(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ENABLE_COMPRESSION_FALLBACK=False)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        async def fake_compress(files, **kwargs):
+            raise AssertionError("should not run when disabled")
+
+        monkeypatch.setattr(download_task, "_compress_oversized_videos", fake_compress)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        saved = await store.get(job.job_id)
+        assert saved.status == JobStatus.COMPLETED
+
+
 class TestUserPreferencesWiring:
     async def test_job_quality_is_passed_to_download_options(
         self, fake_redis, limiter, tmp_path, monkeypatch

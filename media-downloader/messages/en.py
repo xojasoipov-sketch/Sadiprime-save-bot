@@ -7,7 +7,7 @@ MESSAGES: dict[str, str] = {
         "download it for you.\n\n"
         "Or just type a song name — pick from the results list and I'll "
         "send it as mp3 🎵\n\n"
-        "Commands: /help /settings /status"
+        "Commands: /help /settings /status /stats"
     ),
     "help": (
         "ℹ️ Supported platforms:\n"
@@ -25,6 +25,8 @@ MESSAGES: dict[str, str] = {
     "settings_audio_only_on": "🎵 Audio only: ON",
     "settings_audio_only_off": "🎬 Audio only: OFF",
     "status_header": "📊 Bot status",
+    "stats_header": "📈 Statistics",
+    "stats_top_platforms": "By platform:",
     "link_detected": "🔎 Link detected",
     "music_search_detected": "🎵 Searching…",
     "error_no_query": "❌ That's too short to search. Type a song or artist name.",

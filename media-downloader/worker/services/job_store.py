@@ -145,3 +145,14 @@ class JobStore:
         keys = ["total", "success", "failure"]
         values = await self.redis.mget([f"{_STATS_PREFIX}{k}" for k in keys])
         return {k: int(v or 0) for k, v in zip(keys, values, strict=True)}
+
+    async def get_platform_stats(self) -> dict[str, int]:
+        """Per-platform job counts (success + failure combined), for /stats."""
+
+        result: dict[str, int] = {}
+        prefix = f"{_STATS_PREFIX}platform:"
+        async for key in self.redis.scan_iter(match=f"{prefix}*"):
+            platform = key[len(prefix) :]
+            value = await self.redis.get(key)
+            result[platform] = int(value or 0)
+        return result

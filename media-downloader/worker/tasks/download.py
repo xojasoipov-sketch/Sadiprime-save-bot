@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.types import (
@@ -29,10 +30,14 @@ from downloader.base import (
     DownloaderError,
     DownloadOptions,
     DownloadResult,
+    MediaFile,
     MediaKind,
+    MediaUnavailableError,
 )
 from downloader.registry import get_adapter
 from media.cleanup import cleanup_job_dir, job_dir_for
+from media.processor import ProcessingError as CompressionError
+from media.processor import ffmpeg_available, transcode_to_fit_size
 from media.validator import FileValidationError, validate_media_file
 from messages.registry import t
 from worker.services.disk import check_disk_capacity
@@ -81,6 +86,44 @@ async def _safe_edit(bot: Bot, chat_id: int, message_id: int | None, text: str) 
         await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
     except TelegramAPIError as exc:
         logger.warning("status_edit_failed", chat_id=chat_id, error=str(exc))
+
+
+async def _compress_oversized_videos(
+    files: list[MediaFile],
+    *,
+    max_size_bytes: int,
+    timeout_seconds: int,
+    log: structlog.stdlib.BoundLogger,
+) -> list[MediaFile]:
+    """Best-effort: re-encode any oversized VIDEO file to fit under the
+    limit before the size check gets a chance to reject it outright.
+    Images/audio are never touched (audio is already small; images have
+    no comparable "reduce bitrate" knob). Leaves a file exactly as-is if
+    ffmpeg is unavailable, duration is unknown, or the transcode itself
+    fails — the normal too-large error path handles it from there."""
+
+    if not ffmpeg_available():
+        return files
+
+    result: list[MediaFile] = []
+    for media_file in files:
+        if media_file.size_bytes > max_size_bytes and media_file.kind == MediaKind.VIDEO:
+            try:
+                log.info(
+                    "compress_started", file=media_file.path.name, size_bytes=media_file.size_bytes
+                )
+                compressed = await transcode_to_fit_size(
+                    media_file, target_max_bytes=max_size_bytes, timeout_seconds=timeout_seconds
+                )
+                log.info(
+                    "compress_completed", file=compressed.path.name, size_bytes=compressed.size_bytes
+                )
+                result.append(compressed)
+                continue
+            except CompressionError as exc:
+                log.warning("compress_failed", file=media_file.path.name, error=str(exc))
+        result.append(media_file)
+    return result
 
 
 async def _heartbeat_loop(store: JobStore, job_id: str, ttl_seconds: int) -> None:
@@ -185,12 +228,27 @@ async def process_job(
                     adapter.download(job.url, options),
                     timeout=settings.job_timeout_seconds,
                 )
-                adapter.validate_result(result, options)
+                if not result.files:
+                    raise MediaUnavailableError("No media files were produced")
                 log.info("download_completed", files=len(result.files))
 
                 job.status = JobStatus.PROCESSING
                 await store.save(job)
                 await _safe_edit(bot, job.chat_id, job.status_message_id, t(lang, "processing"))
+
+                if settings.enable_compression_fallback:
+                    # Try to fit an oversized video under the limit before
+                    # the size check below gets a chance to reject it
+                    # outright (spec: "optionally process/compress if
+                    # configured" rather than a hard fail).
+                    result.files = await _compress_oversized_videos(
+                        result.files,
+                        max_size_bytes=options.max_file_size_bytes,
+                        timeout_seconds=settings.processing_timeout_seconds,
+                        log=log,
+                    )
+
+                adapter.validate_result(result, options)
                 for media_file in result.files:
                     validate_media_file(
                         media_file,

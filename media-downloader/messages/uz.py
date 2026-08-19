@@ -7,7 +7,7 @@ MESSAGES: dict[str, str] = {
         "men uni siz uchun yuklab beraman.\n\n"
         "Yoki shunchaki qo'shiq nomini yozing — natijalar ro'yxatidan tanlang, "
         "men mp3 qilib yuboraman 🎵\n\n"
-        "Buyruqlar: /help /settings /status"
+        "Buyruqlar: /help /settings /status /stats"
     ),
     "help": (
         "ℹ️ Qo'llab-quvvatlanadigan platformalar:\n"
@@ -25,6 +25,8 @@ MESSAGES: dict[str, str] = {
     "settings_audio_only_on": "🎵 Faqat audio: YOQILGAN",
     "settings_audio_only_off": "🎬 Faqat audio: O'CHIRILGAN",
     "status_header": "📊 Bot holati",
+    "stats_header": "📈 Statistika",
+    "stats_top_platforms": "Platformalar bo'yicha:",
     "link_detected": "🔎 Havola aniqlandi",
     "music_search_detected": "🎵 Qidirilmoqda…",
     "error_no_query": "❌ Qidiruv uchun matn juda qisqa. Qo'shiq yoki ijrochi nomini yozing.",

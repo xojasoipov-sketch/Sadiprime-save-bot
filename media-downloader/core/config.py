@@ -68,6 +68,13 @@ class Settings(BaseSettings):
 
     # --- Quality --------------------------------------------------------------
     default_quality: QualityMode = Field(default=QualityMode.BEST_COMPATIBLE, alias="DEFAULT_QUALITY")
+    # If a downloaded video exceeds MAX_FILE_SIZE_MB, try one ffmpeg
+    # re-encode pass to fit it under the limit before giving up (section
+    # 29/30 of the spec: "optionally process/compress if configured").
+    # Disable to always fail outright on an oversized file instead.
+    enable_compression_fallback: bool = Field(
+        default=True, alias="ENABLE_COMPRESSION_FALLBACK"
+    )
 
     # --- Optional platform authentication -------------------------------
     # Netscape-format cookies.txt path (yt-dlp's `cookiefile`). Some
