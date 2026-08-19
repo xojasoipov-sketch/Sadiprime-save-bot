@@ -5,7 +5,8 @@ MESSAGES: dict[str, str] = {
         "👋 Hi! I'm a media downloader bot.\n\n"
         "Send an Instagram, TikTok, YouTube or Pinterest link and I'll "
         "download it for you.\n\n"
-        "Or just type a song name — I'll search for it and send it as mp3 🎵\n\n"
+        "Or just type a song name — pick from the results list and I'll "
+        "send it as mp3 🎵\n\n"
         "Commands: /help /settings /status"
     ),
     "help": (
@@ -15,8 +16,8 @@ MESSAGES: dict[str, str] = {
         "• YouTube (videos and Shorts)\n"
         "• Pinterest (pins)\n\n"
         "Just send a link — the platform is detected automatically.\n"
-        "🎵 Or type a song/artist name (no link needed) — I'll search for it "
-        "and send it as audio (mp3).\n\n"
+        "🎵 Or type a song/artist name (no link needed) — I'll show up to "
+        "10 results, pick one and I'll send it as audio (mp3).\n\n"
         "Use /settings for quality options, /status for bot status."
     ),
     "settings_title": "⚙️ Quality setting:",
@@ -27,6 +28,9 @@ MESSAGES: dict[str, str] = {
     "link_detected": "🔎 Link detected",
     "music_search_detected": "🎵 Searching…",
     "error_no_query": "❌ That's too short to search. Type a song or artist name.",
+    "error_no_search_results": "❌ Nothing found. Try a different name.",
+    "error_search_expired": "⏳ This search has expired. Please search again.",
+    "search_picked": "✅ Selected: {title}",
     "downloading": "⬇️ Downloading…",
     "processing": "📦 Processing…",
     "uploading": "📤 Uploading…",

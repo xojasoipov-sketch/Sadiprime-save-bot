@@ -5,7 +5,8 @@ MESSAGES: dict[str, str] = {
         "👋 Salom! Men media yuklab beruvchi botman.\n\n"
         "Instagram, TikTok, YouTube yoki Pinterest havolasini yuboring — "
         "men uni siz uchun yuklab beraman.\n\n"
-        "Yoki shunchaki qo'shiq nomini yozing — men uni qidirib, mp3 qilib yuboraman 🎵\n\n"
+        "Yoki shunchaki qo'shiq nomini yozing — natijalar ro'yxatidan tanlang, "
+        "men mp3 qilib yuboraman 🎵\n\n"
         "Buyruqlar: /help /settings /status"
     ),
     "help": (
@@ -15,8 +16,8 @@ MESSAGES: dict[str, str] = {
         "• YouTube (video va Shorts)\n"
         "• Pinterest (pin)\n\n"
         "Shunchaki havolani yuboring — platforma avtomatik aniqlanadi.\n"
-        "🎵 Yoki qo'shiq/ijrochi nomini yozing (havolasiz) — men uni qidirib, "
-        "audio (mp3) qilib yuboraman.\n\n"
+        "🎵 Yoki qo'shiq/ijrochi nomini yozing (havolasiz) — 10 tagacha natija "
+        "ro'yxatini ko'rsataman, birini tanlasangiz audio (mp3) qilib yuboraman.\n\n"
         "Sozlamalar uchun /settings, holat uchun /status buyrug'ini ishlating."
     ),
     "settings_title": "⚙️ Sifat sozlamasi:",
@@ -27,6 +28,9 @@ MESSAGES: dict[str, str] = {
     "link_detected": "🔎 Havola aniqlandi",
     "music_search_detected": "🎵 Qidirilmoqda…",
     "error_no_query": "❌ Qidiruv uchun matn juda qisqa. Qo'shiq yoki ijrochi nomini yozing.",
+    "error_no_search_results": "❌ Hech narsa topilmadi. Boshqacha nom bilan urinib ko'ring.",
+    "error_search_expired": "⏳ Qidiruv muddati tugadi. Qaytadan qidiring.",
+    "search_picked": "✅ Tanlandi: {title}",
     "downloading": "⬇️ Yuklab olinmoqda…",
     "processing": "📦 Qayta ishlanmoqda…",
     "uploading": "📤 Yuborilmoqda…",

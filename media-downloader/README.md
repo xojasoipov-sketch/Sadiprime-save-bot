@@ -3,9 +3,10 @@
 An isolated Telegram bot that downloads public media (video/image/audio)
 from Instagram, TikTok, YouTube and Pinterest and sends it back to the
 user. It can also find music by name: send a song/artist name with no
-link and the bot searches YouTube and replies with the audio (mp3); an
-`/settings` toggle switches any URL download to audio-only too. Built to
-run alongside another production system (e.g. "SadiPrime")
+link and the bot shows up to 10 YouTube results to pick from, then sends
+the chosen one as audio (mp3); an `/settings` toggle switches any URL
+download to audio-only too. Built to run alongside another production
+system (e.g. "SadiPrime")
 on the same host **without sharing** its database, Redis, Docker network,
 volumes, or application containers. See
 [`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md) for the
@@ -46,13 +47,28 @@ and stats are all Redis keys with TTLs.
 
 ### Music search (no link needed)
 
-A plain-text message with no URL is treated as a song/artist search
-(`downloader/music_search.py`): the text is sanitized and wrapped as a
-yt-dlp `ytsearch1:` query, run against YouTube, and the top result is
-always delivered as audio (ffmpeg extracts mp3 regardless of the raw
-stream's container). This path is separate from `detect_platform()` /
-`PLATFORM_DOMAINS` — it's invoked directly by the bot handler, not
-selected by URL domain, and is excluded from `supported_platforms()`.
+A plain-text message with no URL is treated as a song/artist search. The
+flow (`downloader/music_search.py`, `bot/handlers/download.py`,
+`bot/handlers/music_pick.py`, `bot/services/search_sessions.py`):
+
+1. The text is sanitized and run as a lightweight (metadata-only, no
+   download) `ytsearchN:` query against YouTube — up to 10 results.
+2. The bot replies with a numbered list (title + duration) and an inline
+   keyboard of number buttons. The candidate list itself is held
+   server-side in a short-lived (5 min) Redis session — a Telegram
+   `callback_data` is too small (64 bytes) to carry it — keyed by a random
+   session id, and checked against the original requester's user id so
+   only they can act on their own results.
+3. Tapping a number turns that specific result into a normal download job
+   (forced audio-only; ffmpeg extracts mp3 regardless of the raw stream's
+   container), going through the same `detect_platform()` validation and
+   `enqueue_download_job()` limiter path as a pasted URL.
+
+This path is separate from `detect_platform()` / `PLATFORM_DOMAINS` for
+the *search* step — it's invoked directly by the bot handler, not
+selected by URL domain, and `music_search` is excluded from
+`supported_platforms()`. Once a specific video is picked, though, it's
+downloaded as a normal `youtube` job.
 
 `/settings` also has an audio-only toggle that, when on, sends *any* URL
 download (not just search) as audio.
@@ -206,7 +222,7 @@ worker restart never loses queued (not-yet-started) jobs.
 make install-dev
 make lint        # ruff
 make typecheck    # mypy
-make test         # pytest — 125 tests, all mocked, no network access
+make test         # pytest — 161 tests, all mocked, no network access
 ```
 
 The normal suite never touches Instagram/TikTok/YouTube/Pinterest or a
@@ -224,8 +240,11 @@ i18n message catalog parity, the full error taxonomy →
 user-message mapping, retry vs. no-retry behavior, and an end-to-end
 worker-pipeline integration test (success path, retryable-then-succeeds,
 non-retryable-fails-immediately, and user quality/audio-only preferences
-correctly reaching `DownloadOptions`), music-search query sanitization,
-and the audio-only ffmpeg-postprocessor wiring.
+correctly reaching `DownloadOptions`), music-search query sanitization and
+result parsing, the audio-only ffmpeg-postprocessor wiring, and the full
+bot-layer search → results-list → pick → enqueue flow (including the
+Redis-backed search-session store, its per-requester authorization check,
+and its 5-minute TTL).
 
 ## Troubleshooting
 
