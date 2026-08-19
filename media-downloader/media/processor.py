@@ -173,6 +173,47 @@ async def transcode_to_compatible_codec(
     )
 
 
+async def extract_audio_snippet(
+    media_file: MediaFile,
+    *,
+    output_dir: Path,
+    duration_seconds: int = 20,
+    timeout_seconds: int = 30,
+) -> Path:
+    """Extract a short mp3 clip from a video's audio track for song
+    identification (bot/services/song_id.py). A short, low-bitrate clip
+    is enough for AudD.io to fingerprint and keeps the upload small.
+
+    Raises ProcessingError if ffmpeg is unavailable or the process
+    fails/times out. Callers must treat this as best-effort — a failure
+    here should never fail the surrounding download job.
+    """
+
+    if not ffmpeg_available():
+        raise ProcessingError("ffmpeg is not available in this environment")
+
+    output_path = output_dir / f"{media_file.path.stem}_snippet.mp3"
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(media_file.path),
+        "-t",
+        str(duration_seconds),
+        "-vn",
+        "-acodec",
+        "libmp3lame",
+        "-ar",
+        "44100",
+        "-ab",
+        "64k",
+        str(output_path),
+    ]
+
+    await _run_ffmpeg(cmd, output_path=output_path, timeout_seconds=timeout_seconds)
+    return output_path
+
+
 def get_free_disk_bytes(path: Path) -> int:
     usage = shutil.disk_usage(path)
     return usage.free

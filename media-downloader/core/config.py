@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     # README.md "Instagram cookies (optional)".
     cookies_file: Path | None = Field(default=None, alias="COOKIES_FILE")
 
+    # --- Song identification (optional) ---------------------------------
+    # AudD.io API token (https://dashboard.audd.io/) — enables the
+    # "identify the song" button under downloaded videos. Unset by
+    # default: the button is simply not shown when this is empty, exactly
+    # like COOKIES_FILE above. Never required for the bot's core function.
+    audd_api_token: str | None = Field(default=None, alias="AUDD_API_TOKEN")
+
     # --- Logging -----------------------------------------------------------
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 

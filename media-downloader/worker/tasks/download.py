@@ -17,12 +17,15 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.types import (
     FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InputMediaAudio,
     InputMediaDocument,
     InputMediaPhoto,
     InputMediaVideo,
 )
 
+from bot.services.song_id import store_snippet
 from core.config import QualityMode, Settings
 from core.limits import Limiter
 from core.logging import get_logger
@@ -38,6 +41,7 @@ from downloader.registry import get_adapter
 from media.cleanup import cleanup_job_dir, job_dir_for
 from media.processor import ProcessingError as CompressionError
 from media.processor import (
+    extract_audio_snippet,
     ffmpeg_available,
     needs_codec_fix,
     transcode_to_compatible_codec,
@@ -207,16 +211,57 @@ async def _heartbeat_loop(store: JobStore, job_id: str, ttl_seconds: int) -> Non
         pass
 
 
-async def _upload_result(bot: Bot, job: Job, result: DownloadResult, lang: str) -> None:
+def _int_duration(seconds: float | None) -> int | None:
+    """Telegram's Bot API wants an integer second count; MediaFile carries
+    a float (as reported by yt-dlp). None passes through unchanged."""
+
+    return int(seconds) if seconds else None
+
+
+def _song_id_keyboard(job_id: str, lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t(lang, "song_id_button"), callback_data=f"songid:{job_id}")]
+        ]
+    )
+
+
+async def _upload_result(
+    bot: Bot, job: Job, result: DownloadResult, lang: str, settings: Settings
+) -> None:
     files = result.files
     if len(files) == 1:
         media = files[0]
         input_file = FSInputFile(media.path)
         caption = f"{t(lang, 'complete')} — {result.title}" if result.title else t(lang, "complete")
         if media.kind == MediaKind.VIDEO:
-            await bot.send_video(job.chat_id, input_file, caption=caption)
+            # Only offer song identification for a single-video result and
+            # only when an AudD.io token is configured — silently absent
+            # otherwise, same optional-feature pattern as COOKIES_FILE.
+            reply_markup = (
+                _song_id_keyboard(job.job_id, lang) if settings.audd_api_token else None
+            )
+            # width/height/duration MUST be passed explicitly: without them
+            # Telegram clients don't know the real aspect ratio at render
+            # time and guess a default preview box, which shows up as a
+            # squished/letterboxed video in the chat list until tapped.
+            await bot.send_video(
+                job.chat_id,
+                input_file,
+                caption=caption,
+                width=media.width,
+                height=media.height,
+                duration=_int_duration(media.duration_seconds),
+                supports_streaming=True,
+                reply_markup=reply_markup,
+            )
         elif media.kind == MediaKind.AUDIO:
-            await bot.send_audio(job.chat_id, input_file, caption=caption)
+            await bot.send_audio(
+                job.chat_id,
+                input_file,
+                caption=caption,
+                duration=_int_duration(media.duration_seconds),
+            )
         else:
             await bot.send_photo(job.chat_id, input_file, caption=caption)
         return
@@ -228,7 +273,15 @@ async def _upload_result(bot: Bot, job: Job, result: DownloadResult, lang: str) 
     for media in files[:10]:
         input_file = FSInputFile(media.path)
         if media.kind == MediaKind.VIDEO:
-            group_items.append(InputMediaVideo(media=input_file))
+            group_items.append(
+                InputMediaVideo(
+                    media=input_file,
+                    width=media.width,
+                    height=media.height,
+                    duration=_int_duration(media.duration_seconds),
+                    supports_streaming=True,
+                )
+            )
         else:
             group_items.append(InputMediaPhoto(media=input_file))
 
@@ -239,11 +292,49 @@ async def _upload_result(bot: Bot, job: Job, result: DownloadResult, lang: str) 
     for media in files[10:]:
         input_file = FSInputFile(media.path)
         if media.kind == MediaKind.VIDEO:
-            await bot.send_video(job.chat_id, input_file)
+            await bot.send_video(
+                job.chat_id,
+                input_file,
+                width=media.width,
+                height=media.height,
+                duration=_int_duration(media.duration_seconds),
+                supports_streaming=True,
+            )
         elif media.kind == MediaKind.AUDIO:
-            await bot.send_audio(job.chat_id, input_file)
+            await bot.send_audio(
+                job.chat_id, input_file, duration=_int_duration(media.duration_seconds)
+            )
         else:
             await bot.send_photo(job.chat_id, input_file)
+
+
+async def _store_song_id_snippet(
+    store: JobStore,
+    job: Job,
+    result: DownloadResult,
+    settings: Settings,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Extract a short audio clip from the uploaded video and stash it in
+    Redis under the job id, for the "identify song" button to consume
+    later. Never raises — a failure here must not fail the job itself,
+    since the video has already been delivered to the user by this point.
+    """
+
+    if len(result.files) != 1 or result.files[0].kind != MediaKind.VIDEO:
+        return
+
+    try:
+        snippet_path = await extract_audio_snippet(
+            result.files[0],
+            output_dir=result.files[0].path.parent,
+            timeout_seconds=settings.processing_timeout_seconds,
+        )
+        audio_bytes = snippet_path.read_bytes()
+        snippet_path.unlink(missing_ok=True)
+        await store_snippet(store.redis, job_id=job.job_id, audio_bytes=audio_bytes)
+    except Exception as exc:  # noqa: BLE001 - best-effort, never fail the job for this
+        log.warning("song_id_snippet_failed", error=str(exc))
 
 
 async def process_job(
@@ -334,10 +425,17 @@ async def process_job(
                 await store.save(job)
                 await _safe_edit(bot, job.chat_id, job.status_message_id, t(lang, "uploading"))
                 await asyncio.wait_for(
-                    _upload_result(bot, job, result, lang),
+                    _upload_result(bot, job, result, lang, settings),
                     timeout=settings.upload_timeout_seconds,
                 )
                 log.info("upload_completed")
+
+                if settings.audd_api_token:
+                    # Best-effort: the song-id button is only useful if a
+                    # snippet is waiting in Redis by the time it's tapped.
+                    # Must happen before the finally block's
+                    # cleanup_job_dir() deletes the source video below.
+                    await _store_song_id_snippet(store, job, result, settings, log)
 
                 job.status = JobStatus.COMPLETED
                 job.completed_at = time.time()

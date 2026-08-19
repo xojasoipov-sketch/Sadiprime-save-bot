@@ -32,12 +32,20 @@ _PNG_BYTES = (
     b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
 )
 
+# Minimal valid ISO-BMFF `ftyp` box — enough for `filetype` to recognize
+# this as video/mp4 without a real encoded video stream.
+_MP4_BYTES = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isommp42"
+
 
 class FakeBot:
     def __init__(self):
         self.edits: list[str] = []
         self.sent: list[str] = []
         self.dms: list[tuple[int, str]] = []
+        #: kwargs captured from the most recent send_video call, so tests
+        #: can assert width/height/duration were actually passed through.
+        self.last_video_kwargs: dict | None = None
+        self.last_video_reply_markup = None
 
     async def edit_message_text(self, chat_id, message_id, text):
         self.edits.append(text)
@@ -45,10 +53,27 @@ class FakeBot:
     async def send_photo(self, chat_id, photo, caption=None):
         self.sent.append("photo")
 
-    async def send_video(self, chat_id, video, caption=None):
+    async def send_video(
+        self,
+        chat_id,
+        video,
+        caption=None,
+        width=None,
+        height=None,
+        duration=None,
+        supports_streaming=None,
+        reply_markup=None,
+    ):
         self.sent.append("video")
+        self.last_video_kwargs = {
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "supports_streaming": supports_streaming,
+        }
+        self.last_video_reply_markup = reply_markup
 
-    async def send_audio(self, chat_id, audio, caption=None):
+    async def send_audio(self, chat_id, audio, caption=None, duration=None):
         self.sent.append("audio")
 
     async def send_media_group(self, chat_id, media):
@@ -164,6 +189,161 @@ class TestSuccessPath:
 
         stats = await store.get_stats()
         assert stats["success"] == 1
+
+
+class VideoScriptedAdapter(DownloaderAdapter):
+    """Adapter double that returns a single video file with real
+    width/height/duration metadata, as yt-dlp's info dict would."""
+
+    name = "instagram"
+
+    async def can_handle(self, url: str) -> bool:
+        return True
+
+    async def get_metadata(self, url: str) -> dict:
+        return {}
+
+    async def download(self, url: str, options: DownloadOptions) -> DownloadResult:
+        options.output_dir.mkdir(parents=True, exist_ok=True)
+        file_path = options.output_dir / "media.mp4"
+        file_path.write_bytes(_MP4_BYTES)
+        media_file = MediaFile(
+            path=file_path,
+            kind=MediaKind.VIDEO,
+            size_bytes=file_path.stat().st_size,
+            width=608,
+            height=1080,
+            duration_seconds=12.4,
+            vcodec="avc1.640028",
+        )
+        return DownloadResult(files=[media_file], source_url=url, platform="instagram")
+
+
+class TestVideoMetadataPassthrough:
+    """Regression test: send_video must receive width/height/duration so
+    Telegram clients render the correct aspect ratio, instead of guessing
+    a default preview box (reported live as a squished/rectangular video).
+    """
+
+    async def test_send_video_receives_dimensions_and_duration(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+        await limiter.register_active_job(job.user_id, job.job_id)
+
+        adapter = VideoScriptedAdapter()
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.sent == ["video"]
+        assert bot.last_video_kwargs == {
+            "width": 608,
+            "height": 1080,
+            "duration": 12,
+            "supports_streaming": True,
+        }
+
+
+class TestSongIdButtonAndSnippet:
+    """The "identify song" button + its Redis-backed audio snippet are an
+    optional feature gated entirely on AUDD_API_TOKEN being set (same
+    pattern as COOKIES_FILE) — nothing here should require a real ffmpeg
+    binary, so extract_audio_snippet is faked."""
+
+    @staticmethod
+    async def _fake_extract_audio_snippet(media_file, *, output_dir, timeout_seconds=30):
+        snippet_path = output_dir / "snippet.mp3"
+        snippet_path.write_bytes(b"fake mp3 snippet bytes")
+        return snippet_path
+
+    async def test_button_and_snippet_present_when_token_configured(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        from bot.services.song_id import get_snippet
+
+        settings = make_settings(tmp_path, AUDD_API_TOKEN="test-token")
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+        await limiter.register_active_job(job.user_id, job.job_id)
+
+        monkeypatch.setattr(
+            download_task, "extract_audio_snippet", self._fake_extract_audio_snippet
+        )
+        adapter = VideoScriptedAdapter()
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.last_video_reply_markup is not None
+        button = bot.last_video_reply_markup.inline_keyboard[0][0]
+        assert button.callback_data == f"songid:{job.job_id}"
+
+        snippet = await get_snippet(fake_redis, job_id=job.job_id)
+        assert snippet == b"fake mp3 snippet bytes"
+
+    async def test_button_and_snippet_absent_when_token_unset(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        from bot.services.song_id import get_snippet
+
+        settings = make_settings(tmp_path)  # AUDD_API_TOKEN unset
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+        await limiter.register_active_job(job.user_id, job.job_id)
+
+        # Not monkeypatched: if this were called with no ffmpeg installed
+        # it would raise, proving the gate skips it entirely when unset.
+        adapter = VideoScriptedAdapter()
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.last_video_reply_markup is None
+        assert await get_snippet(fake_redis, job_id=job.job_id) is None
+
+    async def test_snippet_extraction_failure_does_not_fail_the_job(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        from media.processor import ProcessingError
+
+        async def _raise(*args, **kwargs):
+            raise ProcessingError("ffmpeg exploded")
+
+        settings = make_settings(tmp_path, AUDD_API_TOKEN="test-token")
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+        await limiter.register_active_job(job.user_id, job.job_id)
+
+        monkeypatch.setattr(download_task, "extract_audio_snippet", _raise)
+        adapter = VideoScriptedAdapter()
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        saved = await store.get(job.job_id)
+        assert saved.status == JobStatus.COMPLETED
+        # The button is still shown (it's attached before extraction runs);
+        # tapping it later will just see an expired/missing snippet.
+        assert bot.last_video_reply_markup is not None
 
 
 class TestCompressionFallbackGate:

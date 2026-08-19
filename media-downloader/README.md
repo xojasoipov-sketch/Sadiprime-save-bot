@@ -134,6 +134,7 @@ See `.env.example` for the full, commented list. Key ones:
 | `ENABLE_COMPRESSION_FALLBACK` | Local ffmpeg fallbacks before failing outright: fix an incompatible video codec, and/or fit an oversized video under `MAX_FILE_SIZE_MB`. Default `true`. |
 | `FORCE_IPV4` | Force outbound requests over IPv4. Only useful on a host with a flaky IPv6 route to a platform's CDN. Default `false`. |
 | `COOKIES_FILE` | Optional path to a cookies.txt for authenticated requests. See below. |
+| `AUDD_API_TOKEN` | Optional AudD.io API token — enables the "identify song" button under downloaded videos. See below. |
 
 **Set these from your own server's actual free CPU/RAM/disk** — the
 defaults are conservative placeholders, not a promise the host can handle
@@ -169,6 +170,26 @@ If the session expires (the account gets logged out anywhere, 2FA
 re-prompts, etc.), re-export and repeat steps 2–3; no code changes
 needed.
 
+## Song identification (optional)
+
+Every downloaded video gets a "🎵 Identify song" button underneath it when
+`AUDD_API_TOKEN` is set — unset (default), the button simply doesn't
+appear; nothing else about the bot depends on this.
+
+1. Register at [audd.io](https://dashboard.audd.io/) and get a free API
+   token (no credit card required).
+2. In `.env`, set `AUDD_API_TOKEN=<your token>`.
+3. Redeploy: `docker compose -p media-downloader up -d --force-recreate`
+
+How it works: right after a video is uploaded, the worker extracts a
+short (20s) low-bitrate audio clip with ffmpeg and stashes it in Redis
+under the job id for 10 minutes — this happens *before* the job's temp
+directory is cleaned up, since by then the original file is gone. Tapping
+the button sends that clip to AudD.io's recognition API and replies with
+the matched artist/title (plus a Spotify/Apple Music link when AudD
+returns one). If the clip has no recognizable music, or 10 minutes have
+passed, the bot says so rather than guessing.
+
 ## Download reliability
 
 Beyond cookies, a few things specifically target Instagram/TikTok's
@@ -194,6 +215,11 @@ tendency to be flakier than YouTube/Pinterest:
   default these the way its CLI does, so they're set explicitly. `FORCE_IPV4`
   is available if you're seeing connection issues that look like a flaky
   IPv6 route to a platform's CDN on your specific host.
+- **Correct aspect ratio on upload.** `send_video` always passes the
+  actual width/height/duration yt-dlp reported. Without these, Telegram
+  clients guess a default preview box and the video can show up
+  squished/letterboxed in the chat list until tapped — this is a
+  Bot API metadata requirement, not a re-encode issue.
 - **Proactive admin alerts.** A non-retryable (or retry-exhausted) job
   failure now DMs every `ADMIN_USER_IDS` with the platform, error type,
   and URL — deduplicated per (platform, error type) with a 10-minute
