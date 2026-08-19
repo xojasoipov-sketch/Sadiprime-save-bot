@@ -60,6 +60,7 @@ _ERROR_MESSAGE_KEYS: dict[type[Exception], str] = {}
 def _error_key(exc: Exception) -> str:
     from core.security import InvalidUrlError as SecurityInvalidUrlError
     from downloader.base import (
+        BotDetectionError,
         DiskSpaceError,
         DownloadTimeoutError,
         FileTooLargeError,
@@ -71,6 +72,7 @@ def _error_key(exc: Exception) -> str:
     )
 
     mapping = [
+        (BotDetectionError, "error_bot_check"),
         (PrivateContentError, "error_private"),
         (FileTooLargeError, "error_too_large"),
         (DownloadTimeoutError, "error_timeout"),

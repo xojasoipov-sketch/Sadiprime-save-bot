@@ -41,6 +41,7 @@ MESSAGES: dict[str, str] = {
     "error_invalid_url": "❌ The link is invalid or unsafe.",
     "error_download_failed": "❌ The media could not be downloaded.",
     "error_private": "❌ This content is private or unavailable.",
+    "error_bot_check": "⏳ YouTube flagged this request as automated (the video itself isn't private). Please try again shortly.",
     "error_too_large": "❌ The media is too large for Telegram.",
     "error_timeout": "❌ Download timed out. Please try again later.",
     "error_rate_limited": "⏳ Too many requests. Please try again later.",

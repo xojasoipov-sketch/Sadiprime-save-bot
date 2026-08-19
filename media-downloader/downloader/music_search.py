@@ -73,7 +73,12 @@ class MusicSearchAdapter(YtDlpAdapter):
 
     name = SEARCH_PLATFORM
 
-    extra_ydl_opts = {"noplaylist": True}
+    # Same YouTube bot-check mitigation as downloader/youtube.py — this
+    # is a ytsearch: query against YouTube too.
+    extra_ydl_opts = {
+        "noplaylist": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+    }
 
     def can_handle(self, url: str) -> bool:
         return url.startswith("ytsearch")

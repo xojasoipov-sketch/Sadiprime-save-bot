@@ -91,6 +91,18 @@ class PrivateContentError(DownloaderError):
     retryable = False
 
 
+class BotDetectionError(DownloaderError):
+    """The platform flagged the request itself as automated traffic (e.g.
+    YouTube's "Sign in to confirm you're not a bot") rather than the
+    content actually being private. Distinct from PrivateContentError:
+    the same URL usually works fine moments later or from a different
+    client/IP — it's a request-level anti-bot check, not a per-video
+    access restriction, so telling the user "this content is private" is
+    actively misleading. Retryable since it's often transient."""
+
+    retryable = True
+
+
 class MediaUnavailableError(DownloaderError):
     retryable = False
 

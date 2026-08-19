@@ -24,6 +24,7 @@ import yt_dlp
 from core.config import QualityMode
 from core.security import sanitize_filename
 from downloader.base import (
+    BotDetectionError,
     DownloaderAdapter,
     DownloadOptions,
     DownloadResult,
@@ -36,12 +37,19 @@ from downloader.base import (
     RateLimitedByPlatformError,
 )
 
+# Checked first and separately from _PRIVATE_MARKERS: YouTube's own
+# anti-bot check ("Sign in to confirm you're not a bot") is a
+# request-level flag, not the video actually being private — grouping it
+# under "private" told users a specific public video was restricted when
+# the real cause is YouTube distrusting the request (common on datacenter
+# IPs like a VPS). See downloader/base.py:BotDetectionError.
+_BOT_CHECK_MARKERS = ("sign in to confirm",)
+
 _PRIVATE_MARKERS = (
     "private",
     "login required",
     "requires authentication",
     "this account is private",
-    "sign in to confirm",
 )
 
 _UNAVAILABLE_MARKERS = (
@@ -233,6 +241,8 @@ class YtDlpAdapter(DownloaderAdapter):
     @staticmethod
     def _translate_error(exc: yt_dlp.utils.DownloadError) -> Exception:
         message = str(exc).lower()
+        if any(marker in message for marker in _BOT_CHECK_MARKERS):
+            return BotDetectionError("The platform flagged this request as automated traffic")
         if any(marker in message for marker in _PRIVATE_MARKERS):
             return PrivateContentError("This content is private or requires login")
         if any(marker in message for marker in _RATE_LIMIT_MARKERS):

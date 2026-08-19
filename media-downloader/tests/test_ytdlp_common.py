@@ -3,9 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yt_dlp
 
 from core.config import QualityMode
-from downloader.base import DownloadOptions
+from downloader.base import (
+    BotDetectionError,
+    DownloadOptions,
+    MediaUnavailableError,
+    PrivateContentError,
+)
 from downloader.youtube import YouTubeAdapter
 
 
@@ -142,3 +148,39 @@ class TestVcodecPopulatedFromInfo:
         files = adapter._collect_files(info, tmp_path)
 
         assert files[0].vcodec == "avc1.640028"
+
+
+class TestYouTubeBotCheckMitigation:
+    def test_extra_opts_prefer_android_client(self):
+        # The "android" client is far less likely to hit YouTube's
+        # "Sign in to confirm you're not a bot" check than the default
+        # web client, especially from a datacenter/VPS IP.
+        adapter = YouTubeAdapter()
+        assert adapter.extra_ydl_opts["extractor_args"]["youtube"]["player_client"] == [
+            "android",
+            "web",
+        ]
+
+
+class TestTranslateError:
+    def test_sign_in_to_confirm_maps_to_bot_detection_not_private(self):
+        # Regression test: this used to be classified as PrivateContentError
+        # ("this content is private or requires login"), which is
+        # misleading — the video usually isn't private at all, YouTube
+        # just flagged the request itself as automated.
+        exc = yt_dlp.utils.DownloadError(
+            "ERROR: [youtube] abc123: Sign in to confirm you're not a bot."
+        )
+        result = YouTubeAdapter._translate_error(exc)
+        assert isinstance(result, BotDetectionError)
+        assert result.retryable is True
+
+    def test_actually_private_content_still_maps_to_private(self):
+        exc = yt_dlp.utils.DownloadError("ERROR: Private video. Sign in if you've been invited.")
+        result = YouTubeAdapter._translate_error(exc)
+        assert isinstance(result, PrivateContentError)
+
+    def test_unavailable_content_maps_to_media_unavailable(self):
+        exc = yt_dlp.utils.DownloadError("ERROR: Video unavailable")
+        result = YouTubeAdapter._translate_error(exc)
+        assert isinstance(result, MediaUnavailableError)

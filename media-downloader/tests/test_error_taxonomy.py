@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from core.security import InvalidUrlError as SecurityInvalidUrlError
 from downloader.base import (
+    BotDetectionError,
     DiskSpaceError,
     DownloadTimeoutError,
     FileTooLargeError,
@@ -20,6 +21,7 @@ class TestRetryability:
         assert DownloadTimeoutError("x").retryable is True
         assert RateLimitedByPlatformError("x").retryable is True
         assert TelegramUploadError("x").retryable is True
+        assert BotDetectionError("x").retryable is True
 
     def test_permanent_errors_are_not_retryable(self):
         assert PrivateContentError("x").retryable is False
@@ -31,6 +33,11 @@ class TestRetryability:
 class TestErrorToMessageMapping:
     def test_private_content_maps_to_private_key(self):
         assert _error_key(PrivateContentError("x")) == "error_private"
+
+    def test_bot_detection_maps_to_its_own_key_not_private(self):
+        # Must not be lumped in with error_private: the video isn't
+        # actually private, YouTube just flagged the request itself.
+        assert _error_key(BotDetectionError("x")) == "error_bot_check"
 
     def test_too_large_maps_correctly(self):
         assert _error_key(FileTooLargeError("x")) == "error_too_large"

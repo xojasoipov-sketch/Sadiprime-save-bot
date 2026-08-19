@@ -15,6 +15,13 @@ class YouTubeAdapter(YtDlpAdapter):
 
     extra_ydl_opts = {
         "noplaylist": True,
+        # YouTube increasingly blocks the default "web" client with
+        # "Sign in to confirm you're not a bot", especially from
+        # datacenter/VPS IPs. The "android" client is less aggressively
+        # flagged and doesn't need a PO token; "web" stays as a fallback
+        # for anything android can't extract. See downloader/base.py's
+        # BotDetectionError docstring for the error-handling side of this.
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
 
     def can_handle(self, url: str) -> bool:

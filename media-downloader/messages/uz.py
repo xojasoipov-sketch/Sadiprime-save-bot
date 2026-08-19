@@ -41,6 +41,7 @@ MESSAGES: dict[str, str] = {
     "error_invalid_url": "❌ Havola noto'g'ri yoki xavfsiz emas.",
     "error_download_failed": "❌ Mediani yuklab bo'lmadi.",
     "error_private": "❌ Bu kontent yopiq yoki mavjud emas.",
+    "error_bot_check": "⏳ YouTube bu so'rovni robot deb belgiladi (video shaxsiy emas). Birozdan so'ng qayta urinib ko'ring.",
     "error_too_large": "❌ Media Telegram uchun juda katta.",
     "error_timeout": "❌ Yuklash vaqti tugadi. Birozdan so'ng qayta urinib ko'ring.",
     "error_rate_limited": "⏳ Juda ko'p so'rov. Birozdan so'ng qayta urinib ko'ring.",

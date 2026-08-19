@@ -226,6 +226,17 @@ tendency to be flakier than YouTube/Pinterest:
   clients guess a default preview box and the video can show up
   squished/letterboxed in the chat list until tapped — this is a
   Bot API metadata requirement, not a re-encode issue.
+- **YouTube bot-check mitigation.** YouTube increasingly serves "Sign in
+  to confirm you're not a bot" to the default "web" client, especially
+  from datacenter/VPS IPs — this is a request-level anti-bot flag, not
+  the video actually being private. `downloader/youtube.py` prefers the
+  "android" client first (much less aggressively flagged, no cookies
+  needed), falling back to "web". If it still happens, it's reported as
+  a distinct, retried `error_bot_check` rather than being lumped in with
+  `error_private` — the old behavior told users a specific public video
+  was restricted when it wasn't. If it keeps recurring, YouTube cookies
+  in the same `COOKIES_FILE` (see "Instagram cookies" above — a single
+  cookies.txt can hold cookies for multiple domains) reduce it further.
 - **Proactive admin alerts.** A non-retryable (or retry-exhausted) job
   failure now DMs every `ADMIN_USER_IDS` with the platform, error type,
   and URL — deduplicated per (platform, error type) with a 10-minute
