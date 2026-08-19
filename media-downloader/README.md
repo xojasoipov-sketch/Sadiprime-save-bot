@@ -361,6 +361,19 @@ proactive admin-alerting logic.
   Telegram's limits allow it, or lower `DEFAULT_QUALITY`.
 - **Disk errors**: check `MIN_FREE_DISK_MB` / `MAX_TEMP_STORAGE_MB` against
   actual free space; `make status` and `/status` both report free disk.
+- **A status message (search results, song-id) gets stuck forever, `bot`
+  container status flips to unhealthy/restarts, and there's no error or
+  traceback anywhere in `make logs-bot`**: this is the signature of the
+  `bot` container hitting its Docker memory limit (`deploy.resources.
+  limits.memory` in `docker-compose.yml`) — the kernel OOM-kills the
+  process before it gets a chance to log anything, and `restart:
+  unless-stopped` brings it back up silently. Confirm with `docker inspect
+  media-downloader-bot --format 'OOMKilled={{.State.OOMKilled}}'` right
+  after it happens, and `docker stats media-downloader-bot --no-stream`
+  while a search is in flight. If it's happening again, raise that
+  service's `memory` limit — yt-dlp searches (used by both the plain-text
+  music search and the song-id button, both running in the `bot` process)
+  are the most memory-hungry thing that container does.
 
 ## Backup / rollback
 

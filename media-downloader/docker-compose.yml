@@ -55,9 +55,23 @@ services:
       start_period: 15s
     deploy:
       resources:
+        # 150MB (the original value) was too tight: the bot process runs
+        # yt-dlp searches directly (plain-text music search AND the
+        # song-id button's follow-up search both call
+        # downloader/music_search.py's search_candidates() in-process,
+        # not in the worker) — yt-dlp's own import footprint plus a
+        # search response is enough to hit a 150MB cgroup limit, which
+        # gets the process OOM-killed with zero application-level log
+        # output (this is exactly what live testing hit: a status
+        # message stuck forever on "searching…", the container silently
+        # restarting a few seconds later, nothing but "bot_starting"
+        # again in the logs — no traceback, because the kernel killed
+        # the process, the process never got a chance to log anything).
+        # 300MB leaves headroom for that without meaningfully touching
+        # the budget tuned for this server in ARCHITECTURE_AUDIT.md.
         limits:
           cpus: "0.25"
-          memory: 150m
+          memory: 300m
     # No `ports:` — long polling only, no inbound HTTP required.
 
   worker:
