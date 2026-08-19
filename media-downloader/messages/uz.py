@@ -5,6 +5,7 @@ MESSAGES: dict[str, str] = {
         "👋 Salom! Men media yuklab beruvchi botman.\n\n"
         "Instagram, TikTok, YouTube yoki Pinterest havolasini yuboring — "
         "men uni siz uchun yuklab beraman.\n\n"
+        "Yoki shunchaki qo'shiq nomini yozing — men uni qidirib, mp3 qilib yuboraman 🎵\n\n"
         "Buyruqlar: /help /settings /status"
     ),
     "help": (
@@ -14,12 +15,18 @@ MESSAGES: dict[str, str] = {
         "• YouTube (video va Shorts)\n"
         "• Pinterest (pin)\n\n"
         "Shunchaki havolani yuboring — platforma avtomatik aniqlanadi.\n"
+        "🎵 Yoki qo'shiq/ijrochi nomini yozing (havolasiz) — men uni qidirib, "
+        "audio (mp3) qilib yuboraman.\n\n"
         "Sozlamalar uchun /settings, holat uchun /status buyrug'ini ishlating."
     ),
     "settings_title": "⚙️ Sifat sozlamasi:",
     "settings_saved": "✅ Sozlama saqlandi: {quality}",
+    "settings_audio_only_on": "🎵 Faqat audio: YOQILGAN",
+    "settings_audio_only_off": "🎬 Faqat audio: O'CHIRILGAN",
     "status_header": "📊 Bot holati",
     "link_detected": "🔎 Havola aniqlandi",
+    "music_search_detected": "🎵 Qidirilmoqda…",
+    "error_no_query": "❌ Qidiruv uchun matn juda qisqa. Qo'shiq yoki ijrochi nomini yozing.",
     "downloading": "⬇️ Yuklab olinmoqda…",
     "processing": "📦 Qayta ishlanmoqda…",
     "uploading": "📤 Yuborilmoqda…",

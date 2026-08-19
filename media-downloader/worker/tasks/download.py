@@ -22,7 +22,7 @@ from aiogram.types import (
     InputMediaVideo,
 )
 
-from core.config import Settings
+from core.config import QualityMode, Settings
 from core.limits import Limiter
 from core.logging import get_logger
 from downloader.base import (
@@ -98,7 +98,7 @@ async def _upload_result(bot: Bot, job: Job, result: DownloadResult, lang: str) 
     if len(files) == 1:
         media = files[0]
         input_file = FSInputFile(media.path)
-        caption = t(lang, "complete")
+        caption = f"{t(lang, 'complete')} — {result.title}" if result.title else t(lang, "complete")
         if media.kind == MediaKind.VIDEO:
             await bot.send_video(job.chat_id, input_file, caption=caption)
         elif media.kind == MediaKind.AUDIO:
@@ -168,8 +168,14 @@ async def process_job(
                 )
 
                 adapter = get_adapter(job.platform)
+                quality = (
+                    QualityMode[job.quality]
+                    if job.quality in QualityMode.__members__
+                    else settings.default_quality
+                )
                 options = DownloadOptions(
-                    quality=settings.default_quality,
+                    quality=quality,
+                    audio_only=job.audio_only,
                     max_file_size_bytes=settings.max_file_size_mb * 1024 * 1024,
                     timeout_seconds=settings.download_timeout_seconds,
                     output_dir=job_dir,

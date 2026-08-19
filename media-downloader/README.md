@@ -2,7 +2,10 @@
 
 An isolated Telegram bot that downloads public media (video/image/audio)
 from Instagram, TikTok, YouTube and Pinterest and sends it back to the
-user. Built to run alongside another production system (e.g. "SadiPrime")
+user. It can also find music by name: send a song/artist name with no
+link and the bot searches YouTube and replies with the audio (mp3); an
+`/settings` toggle switches any URL download to audio-only too. Built to
+run alongside another production system (e.g. "SadiPrime")
 on the same host **without sharing** its database, Redis, Docker network,
 volumes, or application containers. See
 [`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md) for the
@@ -40,6 +43,19 @@ Three containers, one compose project: `bot`, `worker`, `redis`. Redis is
 the only datastore — no Postgres/SQLite (see section 28 of the original
 spec / `docs/ARCHITECTURE_AUDIT.md`): job state, the queue, rate limits,
 and stats are all Redis keys with TTLs.
+
+### Music search (no link needed)
+
+A plain-text message with no URL is treated as a song/artist search
+(`downloader/music_search.py`): the text is sanitized and wrapped as a
+yt-dlp `ytsearch1:` query, run against YouTube, and the top result is
+always delivered as audio (ffmpeg extracts mp3 regardless of the raw
+stream's container). This path is separate from `detect_platform()` /
+`PLATFORM_DOMAINS` — it's invoked directly by the bot handler, not
+selected by URL domain, and is excluded from `supported_platforms()`.
+
+`/settings` also has an audio-only toggle that, when on, sends *any* URL
+download (not just search) as audio.
 
 ### Adding a new platform
 
@@ -190,7 +206,7 @@ worker restart never loses queued (not-yet-started) jobs.
 make install-dev
 make lint        # ruff
 make typecheck    # mypy
-make test         # pytest — 104 tests, all mocked, no network access
+make test         # pytest — 125 tests, all mocked, no network access
 ```
 
 The normal suite never touches Instagram/TikTok/YouTube/Pinterest or a
@@ -207,7 +223,9 @@ job-dir and orphan cleanup, file signature/path-traversal/size validation,
 i18n message catalog parity, the full error taxonomy →
 user-message mapping, retry vs. no-retry behavior, and an end-to-end
 worker-pipeline integration test (success path, retryable-then-succeeds,
-non-retryable-fails-immediately).
+non-retryable-fails-immediately, and user quality/audio-only preferences
+correctly reaching `DownloadOptions`), music-search query sanitization,
+and the audio-only ffmpeg-postprocessor wiring.
 
 ## Troubleshooting
 

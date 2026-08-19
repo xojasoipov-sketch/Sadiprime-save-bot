@@ -21,6 +21,15 @@ class TestJobSerialization:
         restored = Job.from_json(job.to_json())
         assert restored == job
 
+    def test_audio_only_defaults_false(self):
+        job = make_job()
+        assert job.audio_only is False
+
+    def test_audio_only_round_trips_through_json(self):
+        job = make_job(audio_only=True, platform="music_search", url="ytsearch1:test song")
+        restored = Job.from_json(job.to_json())
+        assert restored.audio_only is True
+
 
 class TestJobLifecycle:
     async def test_create_enqueues_and_dequeues(self, fake_redis):

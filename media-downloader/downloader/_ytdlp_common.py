@@ -79,7 +79,7 @@ class YtDlpAdapter(DownloaderAdapter):
     extra_ydl_opts: dict[str, Any] = {}
 
     def _base_ydl_opts(self, options: DownloadOptions, job_dir: Path) -> dict[str, Any]:
-        return {
+        opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,  # never silently pull whole playlists
@@ -91,8 +91,16 @@ class YtDlpAdapter(DownloaderAdapter):
             "retries": 2,
             "max_filesize": options.max_file_size_bytes,
             "merge_output_format": "mp4",
-            **self.extra_ydl_opts,
         }
+        if options.audio_only:
+            # Force a real audio container (mp3) via ffmpeg: the raw
+            # "bestaudio" stream is often .webm/.m4a, which _kind_for_ext
+            # would otherwise misclassify as video.
+            opts["postprocessors"] = [
+                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
+            ]
+        opts.update(self.extra_ydl_opts)
+        return opts
 
     async def get_metadata(self, url: str) -> dict:
         loop = asyncio.get_running_loop()

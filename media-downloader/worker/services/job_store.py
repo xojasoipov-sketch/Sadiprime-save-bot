@@ -41,6 +41,7 @@ class Job:
     quality: str = "BEST_COMPATIBLE"
     attempt: int = 0
     status_message_id: int | None = None
+    audio_only: bool = False
 
     def to_json(self) -> str:
         d = asdict(self)

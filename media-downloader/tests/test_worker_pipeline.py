@@ -61,6 +61,7 @@ class ScriptedAdapter(DownloaderAdapter):
     def __init__(self, failures: list[Exception]):
         self.failures = list(failures)
         self.call_count = 0
+        self.received_options: list[DownloadOptions] = []
 
     def can_handle(self, url: str) -> bool:
         return True
@@ -70,6 +71,7 @@ class ScriptedAdapter(DownloaderAdapter):
 
     async def download(self, url: str, options: DownloadOptions) -> DownloadResult:
         self.call_count += 1
+        self.received_options.append(options)
         if self.failures:
             raise self.failures.pop(0)
 
@@ -105,16 +107,18 @@ def _bypass_real_disk_check(monkeypatch):
     monkeypatch.setattr(download_task, "check_disk_capacity", lambda *a, **k: None)
 
 
-def make_job(tmp_path: Path) -> Job:
-    return Job(
-        job_id=JobStore.new_job_id(),
-        user_id=42,
-        chat_id=42,
-        url="https://www.instagram.com/reel/x/",
-        platform="instagram",
-        quality=QualityMode.BEST_COMPATIBLE.value,
-        status_message_id=1,
-    )
+def make_job(tmp_path: Path, **overrides) -> Job:
+    defaults = {
+        "job_id": JobStore.new_job_id(),
+        "user_id": 42,
+        "chat_id": 42,
+        "url": "https://www.instagram.com/reel/x/",
+        "platform": "instagram",
+        "quality": QualityMode.BEST_COMPATIBLE.value,
+        "status_message_id": 1,
+    }
+    defaults.update(overrides)
+    return Job(**defaults)
 
 
 @pytest.fixture
@@ -153,6 +157,59 @@ class TestSuccessPath:
 
         stats = await store.get_stats()
         assert stats["success"] == 1
+
+
+class TestUserPreferencesWiring:
+    async def test_job_quality_is_passed_to_download_options(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path, quality=QualityMode.LOW.value)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].quality == QualityMode.LOW
+
+    async def test_unknown_quality_falls_back_to_settings_default(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path, quality="not-a-real-mode")
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].quality == settings.default_quality
+
+    async def test_audio_only_flag_is_passed_to_download_options(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path, audio_only=True)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].audio_only is True
 
 
 class TestRetryBehavior:
