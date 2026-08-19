@@ -1,0 +1,611 @@
+"""Integration-style tests for the full job pipeline in worker/tasks/download.py.
+
+Everything external (Telegram, yt-dlp/adapters) is faked so these tests
+are deterministic and never touch the network, per section 34/35: the
+normal suite must not depend on live platform availability.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from core.config import QualityMode, Settings
+from core.limits import Limiter
+from downloader.base import (
+    DownloaderAdapter,
+    DownloadOptions,
+    DownloadResult,
+    MediaFile,
+    MediaKind,
+    MediaUnavailableError,
+    PrivateContentError,
+)
+from downloader.base import DownloadTimeoutError as AdapterDownloadTimeoutError
+from worker.services.job_store import Job, JobStatus, JobStore
+from worker.tasks import download as download_task
+
+_PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+)
+
+# Minimal valid ISO-BMFF `ftyp` box — enough for `filetype` to recognize
+# this as video/mp4 without a real encoded video stream.
+_MP4_BYTES = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isommp42"
+
+
+class FakeBot:
+    def __init__(self):
+        self.edits: list[str] = []
+        self.sent: list[str] = []
+        self.dms: list[tuple[int, str]] = []
+        #: kwargs captured from the most recent send_video call, so tests
+        #: can assert width/height/duration were actually passed through.
+        self.last_video_kwargs: dict | None = None
+        self.last_video_reply_markup = None
+
+    async def edit_message_text(self, chat_id, message_id, text):
+        self.edits.append(text)
+
+    async def send_photo(self, chat_id, photo, caption=None):
+        self.sent.append("photo")
+
+    async def send_video(
+        self,
+        chat_id,
+        video,
+        caption=None,
+        width=None,
+        height=None,
+        duration=None,
+        supports_streaming=None,
+        reply_markup=None,
+    ):
+        self.sent.append("video")
+        self.last_video_kwargs = {
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "supports_streaming": supports_streaming,
+        }
+        self.last_video_reply_markup = reply_markup
+
+    async def send_audio(self, chat_id, audio, caption=None, duration=None):
+        self.sent.append("audio")
+
+    async def send_media_group(self, chat_id, media):
+        self.sent.append(f"group:{len(media)}")
+
+    async def send_message(self, chat_id, text):
+        self.dms.append((chat_id, text))
+
+
+class ScriptedAdapter(DownloaderAdapter):
+    """Adapter double that fails N times before succeeding (or never)."""
+
+    name = "instagram"
+
+    def __init__(self, failures: list[Exception]):
+        self.failures = list(failures)
+        self.call_count = 0
+        self.received_options: list[DownloadOptions] = []
+
+    def can_handle(self, url: str) -> bool:
+        return True
+
+    async def get_metadata(self, url: str) -> dict:
+        return {}
+
+    async def download(self, url: str, options: DownloadOptions) -> DownloadResult:
+        self.call_count += 1
+        self.received_options.append(options)
+        if self.failures:
+            raise self.failures.pop(0)
+
+        options.output_dir.mkdir(parents=True, exist_ok=True)
+        file_path = options.output_dir / "media.png"
+        file_path.write_bytes(_PNG_BYTES)
+        media_file = MediaFile(
+            path=file_path,
+            kind=MediaKind.IMAGE,
+            size_bytes=file_path.stat().st_size,
+            width=1,
+            height=1,
+        )
+        return DownloadResult(files=[media_file], source_url=url, platform="instagram")
+
+
+def make_settings(tmp_path: Path, **overrides) -> Settings:
+    defaults = {
+        "BOT_TOKEN": "test",
+        "TEMP_DIR": tmp_path,
+        "MAX_TEMP_STORAGE_MB": 10000,
+        "JOB_LEASE_SECONDS": 30,
+        "JOB_TIMEOUT_SECONDS": 10,
+        "DOWNLOAD_TIMEOUT_SECONDS": 5,
+        "UPLOAD_TIMEOUT_SECONDS": 5,
+    }
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+@pytest.fixture(autouse=True)
+def _bypass_real_disk_check(monkeypatch):
+    # Disk-capacity checks hit the real filesystem `tmp_path` lives on;
+    # keep these tests deterministic regardless of the CI host's free space.
+    monkeypatch.setattr(download_task, "check_disk_capacity", lambda *a, **k: None)
+
+
+def make_job(tmp_path: Path, **overrides) -> Job:
+    defaults = {
+        "job_id": JobStore.new_job_id(),
+        "user_id": 42,
+        "chat_id": 42,
+        "url": "https://www.instagram.com/reel/x/",
+        "platform": "instagram",
+        "quality": QualityMode.BEST_COMPATIBLE.value,
+        "status_message_id": 1,
+    }
+    defaults.update(overrides)
+    return Job(**defaults)
+
+
+@pytest.fixture
+def limiter(fake_redis):
+    return Limiter(
+        redis=fake_redis,
+        max_requests_per_minute=10,
+        max_active_jobs_per_user=1,
+        max_daily_jobs_per_user=50,
+        max_queue_size=100,
+    )
+
+
+class TestSuccessPath:
+    async def test_job_completes_and_cleans_up(self, fake_redis, limiter, tmp_path, monkeypatch):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+        await limiter.register_active_job(job.user_id, job.job_id)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        saved = await store.get(job.job_id)
+        assert saved.status == JobStatus.COMPLETED
+        assert bot.sent == ["photo"]
+        assert not (settings.temp_dir / job.job_id).exists()
+        assert await limiter.active_job_count(job.user_id) == 0
+        assert not await store.lease_alive(job.job_id)
+
+        stats = await store.get_stats()
+        assert stats["success"] == 1
+
+
+class VideoScriptedAdapter(DownloaderAdapter):
+    """Adapter double that returns a single video file with real
+    width/height/duration metadata, as yt-dlp's info dict would."""
+
+    name = "instagram"
+
+    async def can_handle(self, url: str) -> bool:
+        return True
+
+    async def get_metadata(self, url: str) -> dict:
+        return {}
+
+    async def download(self, url: str, options: DownloadOptions) -> DownloadResult:
+        options.output_dir.mkdir(parents=True, exist_ok=True)
+        file_path = options.output_dir / "media.mp4"
+        file_path.write_bytes(_MP4_BYTES)
+        media_file = MediaFile(
+            path=file_path,
+            kind=MediaKind.VIDEO,
+            size_bytes=file_path.stat().st_size,
+            width=608,
+            height=1080,
+            duration_seconds=12.4,
+            vcodec="avc1.640028",
+        )
+        return DownloadResult(files=[media_file], source_url=url, platform="instagram")
+
+
+class TestVideoMetadataPassthrough:
+    """Regression test: send_video must receive width/height/duration so
+    Telegram clients render the correct aspect ratio, instead of guessing
+    a default preview box (reported live as a squished/rectangular video).
+    """
+
+    async def test_send_video_receives_dimensions_and_duration(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+        await limiter.register_active_job(job.user_id, job.job_id)
+
+        adapter = VideoScriptedAdapter()
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.sent == ["video"]
+        assert bot.last_video_kwargs == {
+            "width": 608,
+            "height": 1080,
+            "duration": 12,
+            "supports_streaming": True,
+        }
+
+
+class TestSongIdButtonAndSnippet:
+    """The "identify song" button + its Redis-backed audio snippet are an
+    optional feature gated entirely on AUDD_API_TOKEN being set (same
+    pattern as COOKIES_FILE) — nothing here should require a real ffmpeg
+    binary, so extract_audio_snippet is faked."""
+
+    @staticmethod
+    async def _fake_extract_audio_snippet(media_file, *, output_dir, timeout_seconds=30):
+        snippet_path = output_dir / "snippet.mp3"
+        snippet_path.write_bytes(b"fake mp3 snippet bytes")
+        return snippet_path
+
+    async def test_button_and_snippet_present_when_token_configured(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        from bot.services.song_id import get_snippet
+
+        settings = make_settings(tmp_path, AUDD_API_TOKEN="test-token")
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+        await limiter.register_active_job(job.user_id, job.job_id)
+
+        monkeypatch.setattr(
+            download_task, "extract_audio_snippet", self._fake_extract_audio_snippet
+        )
+        adapter = VideoScriptedAdapter()
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.last_video_reply_markup is not None
+        button = bot.last_video_reply_markup.inline_keyboard[0][0]
+        assert button.callback_data == f"songid:{job.job_id}"
+
+        snippet = await get_snippet(fake_redis, job_id=job.job_id)
+        assert snippet == b"fake mp3 snippet bytes"
+
+    async def test_button_and_snippet_absent_when_token_unset(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        from bot.services.song_id import get_snippet
+
+        settings = make_settings(tmp_path)  # AUDD_API_TOKEN unset
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+        await limiter.register_active_job(job.user_id, job.job_id)
+
+        # Not monkeypatched: if this were called with no ffmpeg installed
+        # it would raise, proving the gate skips it entirely when unset.
+        adapter = VideoScriptedAdapter()
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.last_video_reply_markup is None
+        assert await get_snippet(fake_redis, job_id=job.job_id) is None
+
+    async def test_snippet_extraction_failure_does_not_fail_the_job(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        from media.processor import ProcessingError
+
+        async def _raise(*args, **kwargs):
+            raise ProcessingError("ffmpeg exploded")
+
+        settings = make_settings(tmp_path, AUDD_API_TOKEN="test-token")
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+        await limiter.register_active_job(job.user_id, job.job_id)
+
+        monkeypatch.setattr(download_task, "extract_audio_snippet", _raise)
+        adapter = VideoScriptedAdapter()
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        saved = await store.get(job.job_id)
+        assert saved.status == JobStatus.COMPLETED
+        # The button is still shown (it's attached before extraction runs);
+        # tapping it later will just see an expired/missing snippet.
+        assert bot.last_video_reply_markup is not None
+
+
+class TestCompressionFallbackGate:
+    async def test_compression_step_runs_when_enabled(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ENABLE_COMPRESSION_FALLBACK=True)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        calls = []
+
+        async def fake_compress(files, **kwargs):
+            calls.append(files)
+            return files
+
+        monkeypatch.setattr(download_task, "_apply_local_media_fixes", fake_compress)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert len(calls) == 1
+
+    async def test_compression_step_skipped_when_disabled(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ENABLE_COMPRESSION_FALLBACK=False)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        async def fake_compress(files, **kwargs):
+            raise AssertionError("should not run when disabled")
+
+        monkeypatch.setattr(download_task, "_apply_local_media_fixes", fake_compress)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        saved = await store.get(job.job_id)
+        assert saved.status == JobStatus.COMPLETED
+
+
+class TestUserPreferencesWiring:
+    async def test_job_quality_is_passed_to_download_options(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path, quality=QualityMode.LOW.value)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].quality == QualityMode.LOW
+
+    async def test_unknown_quality_falls_back_to_settings_default(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path, quality="not-a-real-mode")
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].quality == settings.default_quality
+
+    async def test_audio_only_flag_is_passed_to_download_options(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path, audio_only=True)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].audio_only is True
+
+    async def test_cookies_file_is_passed_to_download_options(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("# Netscape HTTP Cookie File\n")
+        settings = make_settings(tmp_path, COOKIES_FILE=str(cookies))
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].cookies_file == cookies
+
+    async def test_force_ipv4_is_passed_to_download_options(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, FORCE_IPV4=True)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        await download_task.process_job(
+            job, bot=FakeBot(), store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.received_options[0].force_ipv4 is True
+
+
+class TestAdminAlerting:
+    async def test_alerts_admin_on_non_retryable_failure(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ADMIN_USER_IDS="111")
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[PrivateContentError("private")])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.dms and bot.dms[0][0] == 111
+        assert "instagram" in bot.dms[0][1]
+        assert "PrivateContentError" in bot.dms[0][1]
+
+    async def test_no_admin_alert_when_no_admins_configured(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)  # ADMIN_USER_IDS unset
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[PrivateContentError("private")])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert bot.dms == []
+
+    async def test_repeat_failures_are_deduplicated_within_cooldown(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ADMIN_USER_IDS="111")
+        store = JobStore(fake_redis)
+        bot = FakeBot()
+
+        for _ in range(3):
+            job = make_job(tmp_path)
+            await store.create(job)
+            adapter = ScriptedAdapter(failures=[PrivateContentError("private")])
+            monkeypatch.setattr(
+                download_task, "get_adapter", lambda platform, adapter=adapter: adapter
+            )
+            await download_task.process_job(
+                job, bot=bot, store=store, limiter=limiter, settings=settings
+            )
+
+        # Same platform + same error type, all within the cooldown window
+        # -> only the first failure actually paged an admin.
+        assert len(bot.dms) == 1
+
+    async def test_different_error_types_each_get_their_own_alert(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path, ADMIN_USER_IDS="111")
+        store = JobStore(fake_redis)
+        bot = FakeBot()
+
+        for failure in [PrivateContentError("private"), MediaUnavailableError("gone")]:
+            job = make_job(tmp_path)
+            await store.create(job)
+            adapter = ScriptedAdapter(failures=[failure])
+            monkeypatch.setattr(
+                download_task, "get_adapter", lambda platform, adapter=adapter: adapter
+            )
+            await download_task.process_job(
+                job, bot=bot, store=store, limiter=limiter, settings=settings
+            )
+
+        assert len(bot.dms) == 2
+
+
+class TestRetryBehavior:
+    async def test_retryable_error_retries_then_succeeds(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[AdapterDownloadTimeoutError("slow")])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.call_count == 2
+        saved = await store.get(job.job_id)
+        assert saved.status == JobStatus.COMPLETED
+
+    async def test_non_retryable_error_fails_immediately(
+        self, fake_redis, limiter, tmp_path, monkeypatch
+    ):
+        settings = make_settings(tmp_path)
+        store = JobStore(fake_redis)
+        job = make_job(tmp_path)
+        await store.create(job)
+
+        adapter = ScriptedAdapter(failures=[PrivateContentError("private")])
+        monkeypatch.setattr(download_task, "get_adapter", lambda platform: adapter)
+
+        bot = FakeBot()
+        await download_task.process_job(
+            job, bot=bot, store=store, limiter=limiter, settings=settings
+        )
+
+        assert adapter.call_count == 1  # never retried
+        saved = await store.get(job.job_id)
+        assert saved.status == JobStatus.FAILED
+        assert saved.error is not None
+        assert "❌" in bot.edits[-1]
