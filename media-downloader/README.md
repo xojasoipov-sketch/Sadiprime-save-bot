@@ -230,11 +230,14 @@ tendency to be flakier than YouTube/Pinterest:
   to confirm you're not a bot" to the default "web" client, especially
   from datacenter/VPS IPs — this is a request-level anti-bot flag, not
   the video actually being private. `downloader/youtube.py` prefers the
-  "android" client first (much less aggressively flagged, no cookies
-  needed), falling back to "web". If it still happens, it's reported as
-  a distinct, retried `error_bot_check` rather than being lumped in with
-  `error_private` — the old behavior told users a specific public video
-  was restricted when it wasn't. If it keeps recurring, YouTube cookies
+  "tv" client first (as of 2025-2026, needs a PO/proof-of-origin token
+  the least often of the no-login clients — even "android" now requires
+  one for a growing share of requests), falling back to "android" then
+  "web". If it still happens, it's reported as a distinct, retried
+  `error_bot_check` rather than being lumped in with `error_private` —
+  the old behavior told users a specific public video was restricted
+  when it wasn't. Client spoofing is not a permanent fix (YouTube keeps
+  tightening this); if it keeps recurring, YouTube cookies
   in the same `COOKIES_FILE` (see "Instagram cookies" above — a single
   cookies.txt can hold cookies for multiple domains) reduce it further.
 - **Proactive admin alerts.** A non-retryable (or retry-exhausted) job

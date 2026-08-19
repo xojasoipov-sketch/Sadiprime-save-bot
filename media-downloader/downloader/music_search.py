@@ -77,7 +77,7 @@ class MusicSearchAdapter(YtDlpAdapter):
     # is a ytsearch: query against YouTube too.
     extra_ydl_opts = {
         "noplaylist": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        "extractor_args": {"youtube": {"player_client": ["tv", "android", "web"]}},
     }
 
     def can_handle(self, url: str) -> bool:

@@ -151,12 +151,14 @@ class TestVcodecPopulatedFromInfo:
 
 
 class TestYouTubeBotCheckMitigation:
-    def test_extra_opts_prefer_android_client(self):
-        # The "android" client is far less likely to hit YouTube's
-        # "Sign in to confirm you're not a bot" check than the default
-        # web client, especially from a datacenter/VPS IP.
+    def test_extra_opts_prefer_tv_then_android_client(self):
+        # "tv" needs a PO token the least often of the no-login clients
+        # (2025-2026 guidance, after "android" also started requiring one
+        # for a growing share of requests); android and web stay as a
+        # fallback chain behind it.
         adapter = YouTubeAdapter()
         assert adapter.extra_ydl_opts["extractor_args"]["youtube"]["player_client"] == [
+            "tv",
             "android",
             "web",
         ]
