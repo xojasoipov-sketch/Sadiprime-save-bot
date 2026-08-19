@@ -102,7 +102,17 @@ async def identify_song(audio_bytes: bytes, *, api_token: str) -> SongMatch | No
             if response.status != 200:
                 raise SongIdError(f"AudD returned HTTP {response.status}")
             payload = await response.json(content_type=None)
-    except aiohttp.ClientError as exc:
+    except SongIdError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - network/parsing boundary
+        # Deliberately broad: aiohttp.ClientTimeout expiring raises
+        # asyncio.TimeoutError (builtins.TimeoutError on 3.11+), NOT
+        # aiohttp.ClientError, and a malformed body can raise a plain
+        # JSONDecodeError — a narrower except here previously let those
+        # escape uncaught, leaving the caller's "searching…" status
+        # message stuck forever since nothing ever reached the
+        # SongIdError handler. Every failure at this boundary must
+        # become a typed, user-visible error instead of hanging.
         raise SongIdError(f"AudD request failed: {exc}") from exc
 
     return _parse_audd_response(payload)

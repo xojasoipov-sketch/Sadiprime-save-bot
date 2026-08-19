@@ -2,9 +2,10 @@
 FROM python:3.12-slim-bookworm AS base
 
 # ffmpeg is required for the rare re-encode fallback (media/processor.py);
-# ca-certificates for TLS to the platform CDNs.
+# ca-certificates for TLS to the platform CDNs; procps provides pgrep,
+# used by the bot service's healthcheck (docker-compose.yml).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl procps \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 10001 downloader \

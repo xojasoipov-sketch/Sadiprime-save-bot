@@ -156,3 +156,48 @@ class TestIdentifySongNetworkCall:
 
         with pytest.raises(SongIdError, match="HTTP 500"):
             await identify_song(b"fake audio", api_token="tok")
+
+    async def test_timeout_is_wrapped_as_song_id_error(self, monkeypatch):
+        # aiohttp.ClientTimeout expiring raises asyncio.TimeoutError
+        # (builtins.TimeoutError on 3.11+), NOT aiohttp.ClientError — this
+        # is the exact bug that left a live status message stuck on
+        # "searching…" forever, since the old except clause didn't cover it.
+        class _TimingOutResponse:
+            async def __aenter__(self):
+                raise TimeoutError("timed out")
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+        monkeypatch.setattr(
+            aiohttp, "ClientSession", lambda *a, **k: _FakeSession(_TimingOutResponse())
+        )
+
+        with pytest.raises(SongIdError, match="AudD request failed"):
+            await identify_song(b"fake audio", api_token="tok")
+
+    async def test_malformed_response_body_is_wrapped_as_song_id_error(self, monkeypatch):
+        class _BadJsonResponse(_FakeResponse):
+            async def json(self, content_type=None):
+                raise ValueError("not valid json")
+
+        response = _BadJsonResponse(status=200, payload={})
+        monkeypatch.setattr(
+            aiohttp, "ClientSession", lambda *a, **k: _FakeSession(response)
+        )
+
+        with pytest.raises(SongIdError, match="AudD request failed"):
+            await identify_song(b"fake audio", api_token="tok")
+
+    async def test_http_status_error_is_not_double_wrapped(self, monkeypatch):
+        # The broad except added for the timeout/parsing bugs above must
+        # not swallow-and-rewrap the SongIdError already raised for a
+        # non-200 status — its original "HTTP 500" message must survive.
+        response = _FakeResponse(status=500, payload={})
+        monkeypatch.setattr(
+            aiohttp, "ClientSession", lambda *a, **k: _FakeSession(response)
+        )
+
+        with pytest.raises(SongIdError, match="HTTP 500") as exc_info:
+            await identify_song(b"fake audio", api_token="tok")
+        assert "AudD request failed" not in str(exc_info.value)

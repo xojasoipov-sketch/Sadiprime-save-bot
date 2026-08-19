@@ -186,3 +186,27 @@ class TestSongIdButtonFlow:
 
         status_message = callback.bot.sent_messages[0]
         assert status_message.edits[-1] == t(settings.default_language.value, "song_id_error")
+
+    async def test_unanticipated_failure_still_resolves_status_message(
+        self, fake_redis, monkeypatch
+    ):
+        """Regression test: any bug/unexpected exception after the status
+        message is sent must still resolve it to an error, never leave it
+        stuck on "searching…" forever (the exact live bug this fixes)."""
+        settings = make_settings()
+        await store_snippet(fake_redis, job_id="job5", audio_bytes=b"snippet-bytes")
+
+        async def fake_identify(audio_bytes, *, api_token):
+            return SongMatch(artist="A", title="T")
+
+        async def fake_search(query, **kwargs):
+            raise RuntimeError("something nobody anticipated")
+
+        monkeypatch.setattr("bot.handlers.song_id.identify_song", fake_identify)
+        monkeypatch.setattr("bot.handlers.song_id.search_candidates", fake_search)
+
+        callback = FakeCallbackQuery(data="songid:job5", user_id=42, message=FakeSentMessage())
+        await handle_song_id(callback, settings, fake_redis)
+
+        status_message = callback.bot.sent_messages[0]
+        assert status_message.edits[-1] == t(settings.default_language.value, "song_id_error")
